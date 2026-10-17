@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ШАГ 5: замените PASTE_OWNER_UID на UID владельца (Authentication → Users → User UID)
+    function isOwner() {
+      return request.auth != null && request.auth.uid == "PASTE_OWNER_UID";
+    }
+
+    // Настройки салона: читают все, меняет только владелец
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    // Записи клиентов
+    match /bookings/{id} {
+      // Клиент может открыть свою запись только по её секретному номеру; список видит только владелец
+      allow get: if true;
+      allow list: if isOwner();
+
+      allow create: if
+        request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated'])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.date is string && request.resource.data.date.size() == 10
+        && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
+        && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
+        && request.resource.data.artist is string && request.resource.data.artist.size() < 40
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60
+        && request.resource.data.phone is string && request.resource.data.phone.size() <= 25
+        && request.resource.data.note is string && request.resource.data.note.size() <= 250
+        && request.resource.data.services is list && request.resource.data.services.size() <= 20
+        && request.resource.data.serviceNames is list && request.resource.data.serviceNames.size() <= 20;
+
+      // Владелец меняет что угодно; клиент может только отменить свою запись
+      allow update: if isOwner() || (
+        resource.data.status != 'cancelled'
+        && request.resource.data.status == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+      );
+      allow delete: if isOwner();
+    }
+
+    // Занятое время (без имён и телефонов) — нужно всем, чтобы показывать свободные окна
+    match /busy/{id} {
+      allow read: if true;
+      allow create: if isOwner() || (
+        request.resource.data.keys().hasOnly(['date','start','dur','artist'])
+        && getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'pending'
+        && request.resource.data.date == getAfter(/databases/$(database)/documents/bookings/$(id)).data.date
+        && request.resource.data.start == getAfter(/databases/$(database)/documents/bookings/$(id)).data.start
+        && request.resource.data.dur == getAfter(/databases/$(database)/documents/bookings/$(id)).data.dur
+        && request.resource.data.artist == getAfter(/databases/$(database)/documents/bookings/$(id)).data.artist
+      );
+      allow update: if isOwner();
+      allow delete: if isOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
+    }
+  }
+}
