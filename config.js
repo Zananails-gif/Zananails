@@ -1,12 +1,10 @@
-// ШАГ 1. Вставьте сюда настройки вашего проекта Firebase
-// (Firebase console → Project settings → Your apps → Web app → SDK setup and configuration → Config).
-// Step 1. Paste your Firebase web app config here.
-
+// Firebase settings for the Zananails project.
 export const firebaseConfig = {
-  apiKey: "PASTE_API_KEY",
-  authDomain: "PASTE_PROJECT_ID.firebaseapp.com",
-  projectId: "PASTE_PROJECT_ID",
-  storageBucket: "PASTE_PROJECT_ID.appspot.com",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
+  apiKey: "AIzaSyC2jCdw7YfaUZAUTAntgeJ9XyUMQ1grBg0",
+  authDomain: "zananails-ecac6.firebaseapp.com",
+  projectId: "zananails-ecac6",
+  storageBucket: "zananails-ecac6.firebasestorage.app",
+  messagingSenderId: "156020471074",
+  appId: "1:156020471074:web:516998ead6c8bdf979e17b",
+  measurementId: "G-3CT6KS3R85"
 };
