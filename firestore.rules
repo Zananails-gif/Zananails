@@ -2,9 +2,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ШАГ 5: замените PASTE_OWNER_UID на UID владельца (Authentication → Users → User UID)
+    // ШАГ 5: замените q1zJeejwznf4FkUuVuOFxK0CUU23 на UID владельца (Authentication → Users → User UID)
     function isOwner() {
-      return request.auth != null && request.auth.uid == "PASTE_OWNER_UID";
+      return request.auth != null && request.auth.uid == "q1zJeejwznf4FkUuVuOFxK0CUU23";
     }
 
     // Настройки салона: читают все, меняет только владелец
