@@ -176,7 +176,7 @@ if (!firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("PASTE")) {
 }
 
 const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
+const db = getFirestore(fbApp, firebaseConfig.databaseId || "(default)");
 const auth = getAuth(fbApp);
 const settingsRef = doc(db, "settings", "salon");
 
