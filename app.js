@@ -390,6 +390,11 @@ function header(step, title, backTo) {
 const loading = () => `<div class="loading" role="status"><span class="spinner" aria-hidden="true"></span>Загрузка…</div>`;
 
 /* ================= client views ================= */
+// Line under each category: the salon's own services in it (first 3), so it always matches what they offer.
+function catSub(cat) {
+  const names = SET.services.filter(s => s.cat === cat).map(s => s.name);
+  return names.slice(0, 3).join(", ") + (names.length > 3 ? " и ещё " + (names.length - 3) : "");
+}
 function vHome() {
   const phoneDigits = (SET.phone || "").replace(/[^\d+]/g, "");
   return `
@@ -402,7 +407,7 @@ function vHome() {
   ${installBlock()}
   <section class="stack">
     <h2 class="h2">Выберите услугу</h2>
-    <div class="grid2">${CATS.filter(c => SET.services.some(s => s.cat === c.id)).map(c => `<button class="cat" data-act="cat" data-v="${esc(c.id)}"><b>${esc(c.id)}</b><span>${esc(c.sub)}</span></button>`).join("")}</div>
+    <div class="grid2">${CATS.filter(c => SET.services.some(s => s.cat === c.id)).map(c => `<button class="cat" data-act="cat" data-v="${esc(c.id)}"><b>${esc(c.id)}</b><span>${esc(catSub(c.id))}</span></button>`).join("")}</div>
   </section>
   <section class="stack">
     <h2 class="h2">Наши мастера</h2>
