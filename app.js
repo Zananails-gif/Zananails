@@ -858,7 +858,7 @@ function vWorks() {
       ${own ? "" : `<label class="field" for="wArtist">Мастер<select id="wArtist">${SET.artists.map(a => `<option value="${esc(a.id)}" ${a.id === D.artist ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>`}
       <div class="btns"><button class="btn sm ghost" data-act="w-cancel">Отмена</button><button class="btn sm" data-act="w-publish" ${S.wBusy ? "disabled" : ""}>${S.wBusy ? "Загружаем…" : "Опубликовать"}</button></div>
     </div>`
-    : `<label class="btn" for="workFile" style="cursor:pointer">${ICON.camera}${S.wBusy ? "Обрабатываем фото…" : "Добавить фото работы"}</label><input id="workFile" type="file" accept="image/*" hidden>`;
+    : `<button class="btn" data-act="w-pick" ${S.wBusy ? "disabled" : ""}>${ICON.camera}${S.wBusy ? "Обрабатываем фото…" : "Добавить фото работы"}</button>`;
   const tile = w => {
     const armed = S.armed === "w:" + w.id;
     return `<div class="wtile ${w.hidden ? "whidden" : ""}"><img src="${esc(w.thumb)}" alt="${esc(w.title || "Работа")}" loading="lazy">
@@ -1086,6 +1086,7 @@ document.addEventListener("click", async e => {
       go(v); break;
     case "cat": S.cat = v; if (S.view !== "services") { S.sel = []; S.artist = "any"; S.date = null; S.time = null; S.tried = false; } go("services"); break;
     case "tab-cat": S.cat = v; render(true); break;
+    case "w-pick": pickWorkPhoto(); break;
     case "svc": S.sel = S.sel.includes(v) ? S.sel.filter(x => x !== v) : S.sel.concat(v); S.time = null; S.date = null; render(true); break;
     case "artist": S.artist = v; S.time = null; S.date = null; render(true); break;
     case "date": S.date = v; S.time = null; render(true); break;
@@ -1179,20 +1180,33 @@ document.addEventListener("change", async e => {
   if (t.id === "dAuto" && S.draft) { S.draft.autoConfirm = t.checked; S.dirty = true; S.draftErr = ""; render(true); }
   if (t.id === "wCat" && S.workDraft) S.workDraft.cat = t.value;
   if (t.id === "wArtist" && S.workDraft) S.workDraft.artist = t.value;
-  if (t.id === "workFile" && t.files && t.files[0]) {
-    S.wBusy = true; render(true);
-    try {
-      const img = await loadImg(t.files[0]);
-      const firstCat = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
-      S.workDraft = { thumb: toJpeg(img, 420, 60000), img: toJpeg(img, 1280, 700000), title: "", cat: firstCat, artist: ROLE === "master" ? MY_ARTIST : (S.gMaster !== "all" ? S.gMaster : (SET.artists[0] || {}).id) };
-    } catch (err) { toast("Не удалось открыть фото. Попробуйте другое."); }
-    S.wBusy = false; render(true);
-  }
 });
 document.addEventListener("submit", e => {
   e.preventDefault();
   if (e.target.id === "loginForm") { if (S.login.mode === "register") register(); else login(); }
 });
+
+/* photo picker lives outside the app screen, so live updates can't remove it while the gallery is open */
+let workPicker = null;
+function pickWorkPhoto() {
+  if (!workPicker) {
+    workPicker = document.createElement("input");
+    workPicker.type = "file"; workPicker.accept = "image/*"; workPicker.id = "workFile";
+    workPicker.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0";
+    document.body.appendChild(workPicker);
+    workPicker.addEventListener("change", () => { const f = workPicker.files && workPicker.files[0]; if (f) usePickedPhoto(f); workPicker.value = ""; });
+  }
+  workPicker.click();
+}
+async function usePickedPhoto(file) {
+    S.wBusy = true; render(true);
+    try {
+      const img = await loadImg(file);
+      const firstCat = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
+      S.workDraft = { thumb: toJpeg(img, 420, 60000), img: toJpeg(img, 1280, 700000), title: "", cat: firstCat, artist: ROLE === "master" ? MY_ARTIST : (S.gMaster !== "all" ? S.gMaster : (SET.artists[0] || {}).id) };
+    } catch (err) { toast("Не удалось открыть фото. Попробуйте другое."); }
+    S.wBusy = false; render(true);
+}
 
 /* ================= writes ================= */
 async function book() {
