@@ -150,11 +150,11 @@ function chairFree(date, start, dur, ignoreId) {
   const n = BUSY.filter(b => b.chair && b.id !== ignoreId && b.date === date && start < b.start + b.dur && b.start < start + dur).length;
   return n < ((SET && SET.pediChairs) || 1);
 }
-function slotsFor(date, artist, dur) {
+function slotsFor(date, artist, dur, needChair = selNeedsChair(), staff = false) {
   if (!SET || isClosed(date) || !dur) return [];
   const out = [];
-  const minStart = date === todayKey() ? nowMin() + 30 : 0;
-  const needChair = selNeedsChair();
+  // clients can book from 30 min ahead; staff can also add a client who is already in the chair today
+  const minStart = staff ? (date < todayKey() ? 1e9 : 0) : date === todayKey() ? nowMin() + 30 : 0;
   for (let t = SET.open; t + dur <= SET.close; t += STEP) {
     if (t < minStart) continue;
     if (needChair && !chairFree(date, t, dur)) continue;
@@ -807,6 +807,7 @@ function vJournal() {
   const nowLine = (k === todayKey() && nm >= OPEN && nm <= CLOSE) ? `<div class="now" style="top:${(nm - OPEN) / 60 * H}px"></div>` : "";
   return `<div class="jhead"><div><div class="step">Журнал записей</div><h1 class="h1">${esc(k === todayKey() ? "Сегодня, " + shortDate(k) : longDate(k))}</h1></div>
     <div class="btns"><button class="back" data-act="jday" data-v="-1" aria-label="Предыдущий день">${ICON.back}</button><button class="back" data-act="jday" data-v="1" aria-label="Следующий день">${ICON.next}</button></div></div>
+  <button class="btn" data-act="mb-new">${ICON.plus}Записать клиента</button>
   <div class="stats"><span class="stat"><b>${day.length}</b> ${plural(day.length, ["запись", "записи", "записей"])}</span><span class="stat">Выручка: <b>${rub(revenue)}</b></span>${k !== todayKey() ? `<button class="stat" data-act="jtoday" style="font-weight:700;color:var(--accent)">К сегодняшнему дню</button>` : ""}</div>
   ${isClosed(k) ? `<div class="empty">Выходной день.</div>` : `
   <div class="jgrid">
@@ -814,6 +815,59 @@ function vJournal() {
     <div class="jbody" style="height:${(CLOSE - OPEN) / 60 * H + 8}px;margin-top:8px">${hours}${vlines}${blocks}${nowLine}</div>
   </div>`}
   <div class="legend"><span><i style="background:var(--accent-soft);outline:1.5px dashed var(--accent)"></i>Новая, ждёт подтверждения</span><span><i style="background:var(--accent-soft)"></i>Подтверждена</span></div>`;
+}
+/* ---------- staff: add a booking by hand (phone call / walk-in) ---------- */
+function vManual() {
+  const M = S.mb, own = ROLE === "master";
+  const sel = M.sel.filter(svcById), dur = sel.reduce((n, id) => n + svcById(id).dur, 0), total = sel.reduce((n, id) => n + Number(svcById(id).price || 0), 0);
+  const chair = sel.some(id => svcById(id).cat === PEDI_CAT);
+  const slots = M.artist && dur ? slotsFor(M.date, M.artist, dur, chair, true) : [];
+  const cats = CATS.filter(c => SET.services.some(x => x.cat === c.id));
+  return `${header("", "Запись клиента", "journal")}
+  ${own ? "" : `<div class="card stack"><b>Мастер</b>${chips("mb-artist", SET.artists.map(a => [a.id, a.name]), M.artist, "Мастер")}</div>`}
+  <div class="card stack"><b>Услуги</b>
+    ${cats.map(c => `<div class="tiny muted" style="font-weight:700;margin-bottom:-4px">${esc(c.id)}</div>
+      <div class="list">${SET.services.filter(x => x.cat === c.id).map(x => `<button class="opt" data-act="mb-svc" data-v="${esc(x.id)}" aria-pressed="${M.sel.includes(x.id)}" style="padding:10px 12px">
+        <div class="optbody"><b>${esc(x.name)}</b><span class="tiny muted">${esc(durTxt(x.dur))} · ${rub(x.price)}</span></div><div class="check">${M.sel.includes(x.id) ? ICON.check : ""}</div></button>`).join("")}</div>`).join("")}
+    ${sel.length ? `<div class="small" style="font-weight:600">Итого: ${esc(durTxt(dur))} · ${rub(total)}</div>` : ""}
+  </div>
+  <div class="card stack"><b>Дата и время</b>
+    <label class="field" for="mbDate">Дата<input id="mbDate" type="date" value="${esc(M.date)}" min="${todayKey()}"></label>
+    ${!M.artist ? `<div class="small muted">Выберите мастера.</div>` : !dur ? `<div class="small muted">Выберите услуги — покажем свободное время.</div>`
+      : isClosed(M.date) ? `<div class="small muted">Выходной день.</div>`
+      : slots.length ? `<div class="slots">${slots.map(t => `<button class="slot" data-act="mb-time" data-v="${t}" aria-pressed="${M.time === t}">${hm(t)}</button>`).join("")}</div>`
+      : `<div class="small muted">На этот день нет свободного времени${chair ? " (или занято педикюрное кресло)" : ""}.</div>`}
+  </div>
+  <div class="card stack"><b>Клиент</b>
+    <label class="field" for="mbName">Имя *<input id="mbName" maxlength="60" autocomplete="off" value="${esc(M.name)}" placeholder="Имя клиента"></label>
+    ${S.tried && !M.name.trim() ? `<div class="err">Укажите имя клиента</div>` : ""}
+    <label class="field" for="mbPhone">Телефон (необязательно)<input id="mbPhone" type="tel" inputmode="tel" maxlength="25" autocomplete="off" value="${esc(M.phone)}" placeholder="+7 900 000 00 00"></label>
+    <label class="field" for="mbNote">Комментарий (необязательно)<input id="mbNote" maxlength="250" autocomplete="off" value="${esc(M.note)}" placeholder="Например: записалась по телефону"></label>
+  </div>`;
+}
+const barManual = () => { const M = S.mb, ok = M && M.artist && M.sel.length && M.time != null;
+  return `<div class="cta wrap"><button class="btn" style="flex:1" data-act="mb-save" ${!ok || S.saving ? "disabled" : ""}>${S.saving ? "Сохраняем…" : ok ? "Записать на " + hm(M.time) : "Выберите услуги и время"}</button></div>`; };
+async function saveManual() {
+  const M = S.mb; S.tried = true;
+  if (!M.name.trim()) { render(true); const e = document.getElementById("mbName"); if (e) e.focus(); return; }
+  const sel = M.sel.filter(svcById), dur = sel.reduce((n, id) => n + svcById(id).dur, 0);
+  const chair = sel.some(id => svcById(id).cat === PEDI_CAT);
+  const artist = ROLE === "master" ? MY_ARTIST : M.artist;
+  if (!artist || !artistFree(artist, M.date, M.time, dur) || (chair && !chairFree(M.date, M.time, dur))) { toast("Это время уже занято. Выберите другое."); M.time = null; render(true); return; }
+  const id = doc(collection(db, "bookings")).id, now = Date.now();
+  const data = { date: M.date, start: M.time, dur, artist, anyArtist: false, services: sel, serviceNames: sel.map(x => svcById(x).name),
+    total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), name: M.name.trim().slice(0, 60), phone: M.phone.trim().slice(0, 25),
+    note: M.note.trim().slice(0, 250), status: "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {}) };
+  S.saving = true; render(true);
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, "bookings", id), data);
+    batch.set(doc(db, "busy", id), { date: data.date, start: data.start, dur, artist, ...(chair ? { chair: true } : {}) });
+    await batch.commit();
+    toast("Клиент записан: " + data.name + ", " + hm(data.start));
+    S.saving = false; S.tried = false; S.mb = null; S.jDate = data.date; watchJday(); go("journal"); return;
+  } catch (err) { toast(errText(err)); }
+  S.saving = false; render(true);
 }
 function vInbox() {
   const pending = PENDING.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
@@ -1119,7 +1173,7 @@ document.addEventListener("focusout", () => { if (deferred) { deferred = false; 
 
 function refreshChrome() {
   if (SET) topBar();
-  if (S.mode === "owner" && USER && ROLE && !ownerDenied && SET) bar.innerHTML = (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
+  if (S.mode === "owner" && USER && ROLE && !ownerDenied && SET) bar.innerHTML = S.view === "manual" && S.mb ? barManual() : (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
 }
 
 function render(keepScroll) {
@@ -1152,12 +1206,13 @@ function render(keepScroll) {
       switch (S.view) {
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
+        case "manual": html = S.mb ? vManual() : vJournal(); break;
         case "report": html = ROLE === "owner" ? vReport() : vJournal(); break;
         case "reportMaster": html = ROLE === "owner" ? vReportMaster() : vJournal(); break;
         case "settings": html = ROLE === "master" ? vMasterAccount() : vSettings(); break;
         default: html = vJournal();
       }
-      b = (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
+      b = S.view === "manual" && S.mb ? barManual() : (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
     }
   }
   const y = window.scrollY;
@@ -1219,6 +1274,11 @@ document.addEventListener("click", async e => {
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
     case "close": S.sheet = null; S.armed = null; render(true); break;
+    case "mb-new": S.mb = { artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: S.jDate < todayKey() ? todayKey() : S.jDate, time: null, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break;
+    case "mb-artist": if (S.mb) { S.mb.artist = v; S.mb.time = null; render(true); } break;
+    case "mb-svc": if (S.mb) { S.mb.sel = S.mb.sel.includes(v) ? S.mb.sel.filter(x => x !== v) : S.mb.sel.concat(v); S.mb.time = null; render(true); } break;
+    case "mb-time": if (S.mb) { S.mb.time = +v; render(true); } break;
+    case "mb-save": saveManual(); break;
     case "jday": S.jDate = addDays(S.jDate, Number(v)); watchJday(); render(true); break;
     case "jtoday": S.jDate = todayKey(); watchJday(); render(true); break;
     case "forgot": forgot(); break;
@@ -1265,6 +1325,9 @@ document.addEventListener("input", e => {
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fNote") S.form.note = t.value;
   else if (t.id === "revText" && S.revDraft) S.revDraft.text = t.value;
+  else if (S.mb && t.id === "mbName") S.mb.name = t.value;
+  else if (S.mb && t.id === "mbPhone") S.mb.phone = t.value;
+  else if (S.mb && t.id === "mbNote") S.mb.note = t.value;
   else if (t.id === "revEditText" && S.revEdit) S.revEdit.text = t.value;
   else if (t.id === "lEmail") S.login.email = t.value;
   else if (t.id === "lPw") S.login.pw = t.value;
@@ -1287,6 +1350,7 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "mbDate" && S.mb && e.target.value) { S.mb.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.mb.time = null; render(true); return; }
   const t = e.target;
   if (t.dataset.d && t.tagName === "SELECT") t.dispatchEvent(new Event("input", { bubbles: true }));
   if (t.id === "logoFile" && t.files && t.files[0]) {

@@ -42,7 +42,9 @@ service cloud.firestore {
         && request.resource.data.get('chair', false) is bool
         && (request.resource.data.status == 'pending'
             || (request.resource.data.status == 'confirmed'
-                && get(/databases/$(database)/documents/settings/salon).data.get('autoConfirm', true) == true))
+                && (isOwner()
+                    || (myArtist() != '' && request.resource.data.artist == myArtist())
+                    || get(/databases/$(database)/documents/settings/salon).data.get('autoConfirm', true) == true)))
         && request.resource.data.date is string && request.resource.data.date.size() == 10
         && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
         && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
