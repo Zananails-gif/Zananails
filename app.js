@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, getDocFromServer,
-  writeBatch, query, where, orderBy, limit
+  writeBatch, query, where, orderBy, limit, getDocs, getDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail,
@@ -61,6 +61,9 @@ const ICON = {
   eyeOff: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.5-.6 4.9-1.4"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   wa: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 20.5l1.3-4A8.5 8.5 0 1 1 8 19.3z"/><path d="M9 8.5c0 3.5 2.5 6.5 6.5 6.5l1-1.5-2-1-1 1c-1.2-.4-2.6-1.8-3-3l1-1-1-2z"/></svg>',
   tg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/><path d="M9 13l9-7"/></svg>',
+  grid: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+  chart: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  camera: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   info: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" style="flex-shrink:0;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>'
 };
 
@@ -104,6 +107,7 @@ let USER = null, authReady = false, ownerDenied = false;
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
+let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null;
 const OWNER_UID = firebaseConfig.ownerUid || "";
 let pendingLoaded = false;
 const MY = {};
@@ -114,6 +118,7 @@ const S = {
   mode: location.hash === "#owner" ? "owner" : "client",
   view: location.hash === "#owner" ? "journal" : "home",
   cat: "Маникюр", sel: [], artist: "any", date: null, time: null,
+  gMaster: "all", gCat: "all", photo: null, workDraft: null, wBusy: false, repPeriod: "week", repMaster: null,
   form: lsGet("nb-form", { name: "", phone: "", note: "" }), tried: false, saving: false,
   bookTab: "upcoming", jDate: todayKey(), sheet: null, armed: null, lastBooked: false,
   draft: null, dirty: false, draftErr: "",
@@ -252,6 +257,18 @@ onSnapshot(query(collection(db, "busy"), where("date", ">=", addDays(todayKey(),
   renderSoon(true);
 }, () => {});
 
+// Photo gallery: customers only get photos that are not hidden.
+onSnapshot(query(collection(db, "works"), where("hidden", "==", false)), snap => {
+  PUB_WORKS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0));
+  renderSoon(true);
+}, () => { PUB_WORKS = []; });
+function watchAllWorks() {
+  unsubOwner.push(onSnapshot(collection(db, "works"), snap => {
+    ALL_WORKS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0));
+    renderSoon(true);
+  }, () => { ALL_WORKS = []; }));
+}
+
 function watchMine() {
   const ids = lsGet("nb-my", []);
   ids.forEach(id => {
@@ -272,7 +289,7 @@ onAuthStateChanged(auth, user => {
 function stopWatches() {
   unsubOwner.forEach(u => u()); unsubOwner = [];
   if (unsubJday) { unsubJday(); unsubJday = null; }
-  PENDING = []; RECENT = []; JDAY = []; MASTER_ALL = []; STAFF = {}; pendingLoaded = false;
+  PENDING = []; RECENT = []; JDAY = []; MASTER_ALL = []; STAFF = {}; ALL_WORKS = []; REPORT = null; pendingLoaded = false;
 }
 function notifyNew(before) {
   if (pendingLoaded) {
@@ -316,6 +333,7 @@ function startOwnerWatch() {
     STAFF = snap.exists() ? (snap.data().map || {}) : {};
     renderSoon(true);
   }, () => {}));
+  watchAllWorks();
   watchJday();
 }
 // A master only ever loads their own bookings.
@@ -327,6 +345,7 @@ function startMasterWatch() {
     notifyNew(before);
     renderSoon(true);
   }, () => { noStaff = true; ROLE = null; renderSoon(true); }));
+  watchAllWorks();
 }
 function deriveMaster() {
   const yday = addDays(todayKey(), -1);
@@ -404,6 +423,7 @@ function vHome() {
     <div class="meta"><span>${ICON.clock}${esc(hoursText())}</span>${SET.area ? `<span>${ICON.pin}${esc(SET.area)}</span>` : ""}</div>
     ${SET.phone ? `<div class="stack" style="gap:6px"><a class="call" href="tel:${esc(phoneDigits)}">${ICON.phone}Позвонить</a><span class="tiny muted" style="text-align:center;user-select:all">${esc(SET.phone)}</span></div>` : ""}
   </div>
+  ${worksStrip()}
   ${installBlock()}
   <section class="stack">
     <h2 class="h2">Выберите услугу</h2>
@@ -411,7 +431,7 @@ function vHome() {
   </section>
   <section class="stack">
     <h2 class="h2">Наши мастера</h2>
-    <div class="list">${SET.artists.map(a => `<div class="row"><div class="thumb avatar" style="width:44px;height:44px;font-size:18px">${esc((a.name || "?").charAt(0))}</div><div><b>${esc(a.name)}</b><div class="tiny muted">Мастер ногтевого сервиса</div></div></div>`).join("")}</div>
+    <div class="list">${SET.artists.map(a => `<div class="row"><div class="thumb avatar" style="width:44px;height:44px;font-size:18px">${esc((a.name || "?").charAt(0))}</div><div style="flex:1;min-width:0"><b>${esc(a.name)}</b><div class="tiny muted">${worksOf(a.id) ? worksOf(a.id) + " " + plural(worksOf(a.id), ["работа", "работы", "работ"]) + " в галерее" : "Мастер ногтевого сервиса"}</div></div>${worksOf(a.id) ? `<button class="linkbtn" data-act="gallery-master" data-v="${esc(a.id)}">Работы ›</button>` : ""}</div>`).join("")}</div>
   </section>
   <a class="linkbtn" href="#owner" style="align-self:center;text-decoration:none">Вход для владельца салона</a>`;
 }
@@ -546,10 +566,63 @@ function vBookings() {
   <p class="tiny muted">Записи сохраняются на этом телефоне. Если вы записывались с другого телефона, они будут видны там.</p>
   <button class="btn ghost" data-act="cat" data-v="${esc(first)}">${ICON.plus}Новая запись</button>`;
 }
+/* ---------- photo gallery (customers) ---------- */
+const worksOf = id => PUB_WORKS.filter(w => w.artist === id).length;
+const chips = (act, items, cur, label) => `<div class="chips" role="group" aria-label="${label}">${items.map(([id, l]) => `<button class="chip" data-act="${act}" data-v="${esc(id)}" aria-pressed="${cur === id}">${esc(l)}</button>`).join("")}</div>`;
+function galleryList(src) {
+  return src.filter(w => (S.gMaster === "all" || w.artist === S.gMaster) && (S.gCat === "all" || w.cat === S.gCat));
+}
+const workDate = w => { const d = new Date(w.created || Date.now()); return d.getDate() + " " + MONG[d.getMonth()]; };
+function worksStrip() {
+  if (!PUB_WORKS.length) return "";
+  return `<section class="stack" style="gap:10px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline"><h2 class="h2">Наши работы</h2>
+      <button class="linkbtn" data-act="gallery-master" data-v="all" style="padding:0;min-height:32px">Смотреть все · ${PUB_WORKS.length}</button></div>
+    <div class="wstrip">${PUB_WORKS.slice(0, 10).map(w => `<button class="wcard" data-act="photo" data-v="${esc(w.id)}" aria-label="${esc((w.title || "Работа") + ", мастер " + artistName(w.artist))}">
+      <span class="ph"><img src="${esc(w.thumb)}" alt="" loading="lazy"></span>
+      <b class="tiny">${esc(w.title || w.cat)}</b><span class="tiny muted" style="margin-top:-3px">${esc(artistName(w.artist))}</span></button>`).join("")}</div>
+  </section>`;
+}
+function vGallery() {
+  const ws = PUB_WORKS;
+  const mids = SET.artists.filter(a => ws.some(w => w.artist === a.id));
+  const cats = CATS.filter(c => ws.some(w => w.cat === c.id));
+  const list = galleryList(ws);
+  const who = S.gMaster !== "all" ? artistName(S.gMaster) : "";
+  return `${header("", "Наши работы", "home")}
+  <div class="small muted" style="margin-top:-10px">${list.length} фото${who ? " · мастер " + esc(who) : ""}</div>
+  ${mids.length > 1 ? chips("g-master", [["all", "Все мастера"]].concat(mids.map(a => [a.id, a.name])), S.gMaster, "Мастер") : ""}
+  ${cats.length > 1 ? chips("g-cat", [["all", "Все"]].concat(cats.map(c => [c.id, c.id])), S.gCat, "Услуга") : ""}
+  ${list.length ? `<div class="wgrid">${list.map(w => `<button class="wtile" data-act="photo" data-v="${esc(w.id)}" aria-label="${esc((w.title || "Работа") + ", мастер " + artistName(w.artist))}"><img src="${esc(w.thumb)}" alt="" loading="lazy"><span class="wtag">${esc(artistName(w.artist))}</span></button>`).join("")}</div>`
+    : `<div class="empty">${ws.length ? "Нет фото с такими фильтрами." : "Фото работ скоро появятся."}</div>`}`;
+}
+function barGallery() {
+  const who = S.gMaster !== "all" && SET.artists.some(a => a.id === S.gMaster);
+  return `<div class="cta wrap"><button class="btn" style="flex:1" data-act="${who ? "book-master" : "cat"}" data-v="${esc(who ? S.gMaster : firstCatId())}">${who ? "Записаться к мастеру " + esc(artistName(S.gMaster)) : "Записаться онлайн"}</button></div>` + clientTabs();
+}
+function vPhoto() {
+  const w = PUB_WORKS.find(x => x.id === S.photo);
+  if (!w) return `${header("", "Фото", "gallery")}<div class="empty">Фото не найдено.</div>`;
+  const list = galleryList(PUB_WORKS), i = list.findIndex(x => x.id === w.id);
+  const name = artistName(w.artist);
+  return `${header(i >= 0 ? (i + 1) + " из " + list.length : "", w.title || "Работа мастера", "gallery")}
+  <div class="photo-full"><img src="${esc(FULL[w.id] || w.thumb)}" alt="${esc(w.title || "Работа мастера " + name)}"></div>
+  ${list.length > 1 ? `<div class="btns"><button class="btn sm ghost" data-act="photo-nav" data-v="-1">${ICON.back}Предыдущее</button><button class="btn sm ghost" data-act="photo-nav" data-v="1">Следующее${ICON.next}</button></div>` : ""}
+  <div class="card row"><div class="thumb avatar" style="width:48px;height:48px;font-size:20px">${esc(name.charAt(0))}</div>
+    <div style="min-width:0"><b>Мастер ${esc(name)}</b><div class="small muted">${esc(w.cat || "")} · ${esc(workDate(w))}</div></div></div>`;
+}
+const barPhoto = () => { const w = PUB_WORKS.find(x => x.id === S.photo); return w && SET.artists.some(a => a.id === w.artist) ? `<div class="cta wrap"><button class="btn" style="flex:1" data-act="book-master" data-v="${esc(w.artist)}">Записаться к мастеру ${esc(artistName(w.artist))}</button></div>` : clientTabs(); };
+async function loadFull(id) {
+  if (FULL[id]) return;
+  try { const s = await getDoc(doc(db, "workImages", id)); if (s.exists() && s.data().img) { FULL[id] = s.data().img; renderSoon(true); } } catch (e) {}
+}
+const firstCatId = () => (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
+
 function clientTabs() {
-  const cur = S.view === "bookings" ? "bookings" : "home";
+  const cur = S.view === "bookings" ? "bookings" : (S.view === "gallery" || S.view === "photo") ? "gallery" : "home";
   return `<nav class="tabs" aria-label="Меню">
     <button class="tab" data-act="go" data-v="home" ${cur === "home" ? 'aria-current="page"' : ""}>${ICON.home}Главная</button>
+    ${PUB_WORKS.length ? `<button class="tab" data-act="gallery-master" data-v="all" ${cur === "gallery" ? 'aria-current="page"' : ""}>${ICON.grid}Работы</button>` : ""}
     <button class="tab" data-act="go" data-v="bookings" ${cur === "bookings" ? 'aria-current="page"' : ""}>${ICON.cal}Мои записи</button></nav>`;
 }
 
@@ -739,10 +812,126 @@ function vSettings() {
     <button class="btn danger" data-act="logout">Выйти из кабинета</button>
   </div>`;
 }
+/* ---------- cabinet: masters' photos ---------- */
+function vWorks() {
+  const own = ROLE === "master";
+  let ws = own ? ALL_WORKS.filter(w => w.artist === MY_ARTIST) : ALL_WORKS;
+  if (!own && S.gMaster !== "all") ws = ws.filter(w => w.artist === S.gMaster);
+  const D = S.workDraft;
+  const catsWithSvc = CATS.filter(c => SET.services.some(s => s.cat === c.id));
+  const form = D ? `<div class="card stack">
+      <h2 class="h2">Новое фото работы</h2>
+      <div class="photo-full" style="aspect-ratio:auto;max-height:260px"><img src="${esc(D.thumb)}" alt="Выбранное фото" style="max-height:260px;object-fit:contain;background:var(--soft)"></div>
+      <label class="field" for="wTitle">Подпись (необязательно)<input id="wTitle" maxlength="60" value="${esc(D.title)}" placeholder="Например: френч с дизайном"></label>
+      <label class="field" for="wCat">Услуга<select id="wCat">${(catsWithSvc.length ? catsWithSvc : CATS).map(c => `<option ${c.id === D.cat ? "selected" : ""}>${esc(c.id)}</option>`).join("")}</select></label>
+      ${own ? "" : `<label class="field" for="wArtist">Мастер<select id="wArtist">${SET.artists.map(a => `<option value="${esc(a.id)}" ${a.id === D.artist ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>`}
+      <div class="btns"><button class="btn sm ghost" data-act="w-cancel">Отмена</button><button class="btn sm" data-act="w-publish" ${S.wBusy ? "disabled" : ""}>${S.wBusy ? "Загружаем…" : "Опубликовать"}</button></div>
+    </div>`
+    : `<label class="btn" for="workFile" style="cursor:pointer">${ICON.camera}${S.wBusy ? "Обрабатываем фото…" : "Добавить фото работы"}</label><input id="workFile" type="file" accept="image/*" hidden>`;
+  const tile = w => {
+    const armed = S.armed === "w:" + w.id;
+    return `<div class="wtile ${w.hidden ? "whidden" : ""}"><img src="${esc(w.thumb)}" alt="${esc(w.title || "Работа")}" loading="lazy">
+      <span class="wtag">${esc(own ? (w.cat || "") : artistName(w.artist))}${w.hidden ? " · скрыто" : ""}</span>
+      ${own ? "" : `<button class="wbtn" style="left:4px" data-act="w-hide" data-v="${esc(w.id)}" aria-label="${w.hidden ? "Показать клиентам" : "Скрыть от клиентов"}">${w.hidden ? ICON.eyeOff : ICON.eye}</button>`}
+      ${armed ? `<button class="wdel" data-act="w-del" data-v="${esc(w.id)}">Удалить?</button>`
+        : `<button class="wbtn" style="right:4px;color:var(--bad)" data-act="w-arm" data-v="${esc(w.id)}" aria-label="Удалить фото">${ICON.trash}</button>`}</div>`;
+  };
+  return `<h1 class="h1" style="font-size:26px">${own ? "Мои работы" : "Работы мастеров"}</h1>
+  <p class="small muted" style="margin-top:-10px">${ws.filter(w => !w.hidden).length} фото видят клиенты</p>
+  ${form}
+  ${!own && SET.artists.length > 1 ? chips("g-master", [["all", "Все мастера"]].concat(SET.artists.map(a => [a.id, a.name])), S.gMaster, "Мастер") : ""}
+  ${ws.length ? `<div class="wgrid">${ws.map(tile).join("")}</div>` : `<div class="empty">Фото пока нет. Нажмите «Добавить фото работы».</div>`}
+  <p class="tiny muted">${own ? "Фото сразу появятся в «Наших работах» у клиентов. Владелец салона может скрыть любое фото." : "Фото мастеров сразу видны клиентам. Значок глаза скрывает или показывает фото."}</p>`;
+}
+
+/* ---------- cabinet: owner's report ---------- */
+function periodRange(p) {
+  const t = todayKey(), d = dateOf(t);
+  if (p === "day") return [t, t, "Сегодня, " + shortDate(t)];
+  if (p === "week") { const from = addDays(t, -((d.getDay() + 6) % 7)), to = addDays(from, 6); const a = dateOf(from), b = dateOf(to);
+    return [from, to, a.getDate() + (a.getMonth() === b.getMonth() ? "" : " " + MONG[a.getMonth()]) + "–" + b.getDate() + " " + MONG[b.getMonth()]]; }
+  const from = t.slice(0, 8) + "01", to = keyOf(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+  return [from, to, MONN[d.getMonth()] + " " + d.getFullYear()];
+}
+async function loadReport() {
+  if (ROLE !== "owner") return;
+  const [from, to] = periodRange(S.repPeriod), key = S.repPeriod + from;
+  REPORT = { key, loading: true, list: REPORT && REPORT.key === key ? REPORT.list : [] };
+  renderSoon(true);
+  try {
+    const q = await getDocs(query(collection(db, "bookings"), where("date", ">=", from), where("date", "<=", to)));
+    REPORT = { key, loading: false, list: q.docs.map(d => Object.assign({ id: d.id }, d.data())) };
+  } catch (e) { REPORT = { key, loading: false, list: [], err: true }; }
+  renderSoon(true);
+}
+const isDone = b => b.status === "confirmed" && (b.date < todayKey() || (b.date === todayKey() && b.start + b.dur <= nowMin()));
+const sumTotal = l => l.reduce((n, b) => n + Number(b.total || 0), 0);
+const hoursTxt = m => (Math.round(m / 6) / 10).toLocaleString("ru-RU");
+function vReport() {
+  const [, , label] = periodRange(S.repPeriod);
+  const L = (REPORT && REPORT.list) || [];
+  const done = L.filter(isDone), canc = L.filter(b => b.status === "cancelled");
+  const planned = L.filter(b => (b.status === "confirmed" || b.status === "pending") && !isDone(b));
+  const total = sumTotal(done);
+  const seg = [["day", "Сегодня"], ["week", "Неделя"], ["month", "Месяц"]].map(([id, l]) => `<button data-act="rep-period" data-v="${id}" aria-pressed="${S.repPeriod === id}">${l}</button>`).join("");
+  const cards = SET.artists.map(a => {
+    const mine = done.filter(b => b.artist === a.id), r = sumTotal(mine), n = mine.length;
+    const cnt = {}; mine.forEach(b => (b.serviceNames || []).forEach(x => { cnt[x] = (cnt[x] || 0) + 1; }));
+    const top = Object.keys(cnt).sort((x, y) => cnt[y] - cnt[x])[0];
+    const pct = total ? Math.round(r / total * 100) : 0;
+    return `<button class="card stack repcard" data-act="rep-master" data-v="${esc(a.id)}">
+      <div class="row"><div class="thumb avatar" style="width:44px;height:44px;font-size:18px">${esc(a.name.charAt(0))}</div>
+        <div style="flex:1;min-width:0;text-align:left"><b>${esc(a.name)}</b><div class="tiny muted">${n} ${plural(n, ["клиент", "клиента", "клиентов"])} · ${pct}% выручки</div></div>
+        <b class="price">${rub(r)}</b></div>
+      <div class="bar8"><i style="width:${pct}%"></i></div>
+      <div class="tiny muted" style="display:flex;justify-content:space-between;gap:8px"><span>${top ? esc(top) + " ×" + cnt[top] : "Нет выполненных записей"}</span><span style="color:var(--accent);font-weight:700">Подробнее ›</span></div>
+    </button>`;
+  }).join("");
+  return `<h1 class="h1" style="font-size:26px">Отчёт</h1>
+  <div class="seg" role="group" aria-label="Период">${seg}</div>
+  <div class="small muted" style="font-weight:600;margin-top:-8px">${esc(label)}${REPORT && REPORT.loading ? " · обновляем…" : ""}</div>
+  ${REPORT && REPORT.err ? `<div class="note">${ICON.info}<span>Не удалось загрузить отчёт. Проверьте интернет.</span></div>` : ""}
+  <div class="stat3">
+    <div class="card"><span class="tiny muted">Клиентов</span><b>${done.length}</b></div>
+    <div class="card"><span class="tiny muted">Выручка</span><b>${rub(total)}</b></div>
+    <div class="card"><span class="tiny muted">Отмены</span><b style="color:var(--bad)">${canc.length}</b></div>
+  </div>
+  ${planned.length ? `<p class="small muted">Ещё запланировано: ${planned.length} ${plural(planned.length, ["запись", "записи", "записей"])} на ${rub(sumTotal(planned))}</p>` : ""}
+  <h2 class="h2">По мастерам</h2>
+  ${cards}
+  <p class="tiny muted">Считаются подтверждённые записи, время которых уже прошло.</p>`;
+}
+function vReportMaster() {
+  const a = SET.artists.find(x => x.id === S.repMaster);
+  const [, , label] = periodRange(S.repPeriod);
+  const L = ((REPORT && REPORT.list) || []).filter(b => b.artist === S.repMaster);
+  const done = L.filter(isDone), canc = L.filter(b => b.status === "cancelled");
+  const svc = {};
+  done.forEach(b => (b.services || []).forEach((id, i) => {
+    const s = SET.services.find(x => x.id === id), nm = (b.serviceNames || [])[i] || (s && s.name) || "Услуга";
+    svc[nm] = svc[nm] || { n: 0, r: 0 }; svc[nm].n++; svc[nm].r += s ? Number(s.price || 0) : Number(b.total || 0) / Math.max(1, (b.services || []).length);
+  }));
+  const rows = done.concat(canc).sort((x, y) => (y.date + hm(y.start)).localeCompare(x.date + hm(x.start)));
+  const mins = done.reduce((n, b) => n + Number(b.dur || 0), 0);
+  return `${header("Отчёт · " + label, a ? a.name : "Мастер", "report")}
+  <div class="stat3">
+    <div class="card"><span class="tiny muted">Клиентов</span><b>${done.length}</b></div>
+    <div class="card"><span class="tiny muted">Выручка</span><b>${rub(sumTotal(done))}</b></div>
+    <div class="card"><span class="tiny muted">Часов</span><b>${hoursTxt(mins)}</b></div>
+  </div>
+  ${Object.keys(svc).length ? `<div class="card sum"><h2 class="h2">Услуги</h2>${Object.keys(svc).sort((x, y) => svc[y].n - svc[x].n).map(k => `<div class="sumrow"><span>${esc(k)}</span><span class="price"><b>${svc[k].n}</b> · ${rub(svc[k].r)}</span></div>`).join("")}</div>` : ""}
+  <h2 class="h2">Выполненные записи</h2>
+  ${rows.length ? `<div class="card" style="padding:0">${rows.map((b, i) => `<div class="row" style="padding:12px 14px;${i ? "border-top:1px solid var(--line)" : ""}">
+      <div style="width:44px;text-align:center;flex-shrink:0"><b class="price">${dateOf(b.date).getDate()}</b><div class="tiny muted">${MONS[dateOf(b.date).getMonth()]}</div></div>
+      <div style="flex:1;min-width:0"><b class="small">${esc(b.name)}</b><div class="tiny ${b.status === "cancelled" ? "" : "muted"}" ${b.status === "cancelled" ? 'style="color:var(--bad)"' : ""}>${hm(b.start)} · ${b.status === "cancelled" ? "Отменена" : esc((b.serviceNames || []).join(", "))}</div></div>
+      <b class="price small" ${b.status === "cancelled" ? 'style="color:var(--faint);text-decoration:line-through"' : ""}>${rub(b.total)}</b></div>`).join("")}</div>`
+    : `<div class="empty">За этот период выполненных записей нет.</div>`}`;
+}
+
 function ownerTabs() {
   const n = PENDING.length;
-  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
-  return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые записи")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
+  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${ROLE === "owner" ? t("report", ICON.chart, "Отчёт") : ""}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
 }
 function saveBar() {
   if (!S.dirty) return "";
@@ -811,6 +1000,8 @@ function render(keepScroll) {
       case "time": html = vTime(); b = barTime(); break;
       case "details": html = vDetails(); b = barDetails(); break;
       case "bookings": html = vBookings(); b = clientTabs(); break;
+      case "gallery": html = vGallery(); b = barGallery(); break;
+      case "photo": html = vPhoto(); b = barPhoto(); break;
       default: html = vHome(); b = barHome() + clientTabs();
     }
   } else {
@@ -824,6 +1015,9 @@ function render(keepScroll) {
     else {
       switch (S.view) {
         case "inbox": html = vInbox(); break;
+        case "works": html = vWorks(); break;
+        case "report": html = ROLE === "owner" ? vReport() : vJournal(); break;
+        case "reportMaster": html = ROLE === "owner" ? vReportMaster() : vJournal(); break;
         case "settings": html = ROLE === "master" ? vMasterAccount() : vSettings(); break;
         default: html = vJournal();
       }
@@ -836,7 +1030,7 @@ function render(keepScroll) {
   main.style.paddingBottom = (bar.offsetHeight + 24) + "px";
   window.scrollTo(0, keepScroll ? y : 0);
 }
-function go(view) { S.view = view; S.armed = null; S.sheet = null; if (view !== "bookings") S.lastBooked = false; render(false); }
+function go(view) { S.view = view; S.armed = null; S.sheet = null; if (view !== "bookings") S.lastBooked = false; if (view === "report") loadReport(); render(false); }
 
 window.addEventListener("hashchange", () => {
   const owner = location.hash === "#owner";
@@ -879,6 +1073,19 @@ document.addEventListener("click", async e => {
     case "jday": S.jDate = addDays(S.jDate, Number(v)); watchJday(); render(true); break;
     case "jtoday": S.jDate = todayKey(); watchJday(); render(true); break;
     case "forgot": forgot(); break;
+    case "gallery-master": S.gMaster = v || "all"; S.gCat = "all"; go("gallery"); break;
+    case "g-master": S.gMaster = v; render(true); break;
+    case "g-cat": S.gCat = v; render(true); break;
+    case "photo": S.photo = v; loadFull(v); go("photo"); break;
+    case "photo-nav": { const l = galleryList(PUB_WORKS), i = l.findIndex(x => x.id === S.photo); if (l.length) { S.photo = l[(i + Number(v) + l.length) % l.length].id; loadFull(S.photo); render(true); } break; }
+    case "book-master": Object.assign(S, { sel: [], artist: v, date: null, time: null, tried: false, cat: firstCatId() }); go("services"); break;
+    case "w-cancel": S.workDraft = null; render(true); break;
+    case "w-publish": publishWork(); break;
+    case "w-arm": S.armed = "w:" + v; render(true); break;
+    case "w-del": deleteWork(v); break;
+    case "w-hide": { const w = ALL_WORKS.find(x => x.id === v); if (w) { try { await updateDoc(doc(db, "works", v), { hidden: !w.hidden }); toast(w.hidden ? "Фото снова видно клиентам" : "Фото скрыто от клиентов"); } catch (err) { toast(errText(err)); } } break; }
+    case "rep-period": S.repPeriod = v; loadReport(); render(true); break;
+    case "rep-master": S.repMaster = v; go("reportMaster"); break;
     case "login-mode": S.login.mode = S.login.mode === "register" ? "login" : "register"; S.login.err = ""; S.login.info = ""; render(true); break;
     case "pw-eye": S.pwShow[v] = !S.pwShow[v]; render(true); { const i = document.getElementById(v); if (i) { i.focus(); const n = i.value.length; try { i.setSelectionRange(n, n); } catch (er) {} } } break;
     case "verified": verified(); break;
@@ -910,6 +1117,7 @@ document.addEventListener("input", e => {
   else if (t.id === "fNote") S.form.note = t.value;
   else if (t.id === "lEmail") S.login.email = t.value;
   else if (t.id === "lPw") S.login.pw = t.value;
+  else if (t.id === "wTitle" && S.workDraft) S.workDraft.title = t.value;
   else if (t.dataset.d && S.draft) {
     const D = S.draft, p = t.dataset.d.split(":");
     if (p[0] === "name" || p[0] === "area" || p[0] === "phone" || p[0] === "telegram") D[p[0]] = t.value;
@@ -937,6 +1145,17 @@ document.addEventListener("change", async e => {
     catch (err) { toast("Не удалось открыть картинку. Попробуйте другой файл."); }
   }
   if (t.dataset.move && t.value) moveBooking(t.dataset.move, t.value);
+  if (t.id === "wCat" && S.workDraft) S.workDraft.cat = t.value;
+  if (t.id === "wArtist" && S.workDraft) S.workDraft.artist = t.value;
+  if (t.id === "workFile" && t.files && t.files[0]) {
+    S.wBusy = true; render(true);
+    try {
+      const img = await loadImg(t.files[0]);
+      const firstCat = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
+      S.workDraft = { thumb: toJpeg(img, 420, 60000), img: toJpeg(img, 1280, 700000), title: "", cat: firstCat, artist: ROLE === "master" ? MY_ARTIST : (S.gMaster !== "all" ? S.gMaster : (SET.artists[0] || {}).id) };
+    } catch (err) { toast("Не удалось открыть фото. Попробуйте другое."); }
+    S.wBusy = false; render(true);
+  }
 });
 document.addEventListener("submit", e => {
   e.preventDefault();
@@ -1033,6 +1252,43 @@ async function saveSettings() {
     S.draft = null; S.dirty = false; toast("Сохранено. Клиенты уже видят изменения.");
   } catch (err) { S.draftErr = errText(err); }
   S.saving = false; render(true);
+}
+function loadImg(file) {
+  return new Promise((res, rej) => { const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(url); res(img); }; img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("bad image")); }; img.src = url; });
+}
+// Shrink a photo to JPEG under `limit` characters (stored in the free database instead of paid file storage).
+function toJpeg(img, max, limit) {
+  let size = max, q = 0.82, out = "";
+  for (let i = 0; i < 10; i++) {
+    const s = Math.min(1, size / Math.max(img.width, img.height)), c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(img.width * s)); c.height = Math.max(1, Math.round(img.height * s));
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
+    out = c.toDataURL("image/jpeg", q);
+    if (out.length <= limit) return out;
+    if (q > 0.62) q -= 0.1; else size = Math.round(size * 0.8);
+  }
+  return out;
+}
+async function publishWork() {
+  const D = S.workDraft;
+  if (!D || !D.thumb) return;
+  const artist = ROLE === "master" ? MY_ARTIST : D.artist;
+  if (!artist) { toast("Выберите мастера"); return; }
+  S.wBusy = true; render(true);
+  try {
+    const id = doc(collection(db, "works")).id, batch = writeBatch(db);
+    batch.set(doc(db, "works", id), { artist, cat: D.cat, title: (D.title || "").trim().slice(0, 60), thumb: D.thumb, created: Date.now(), hidden: false });
+    batch.set(doc(db, "workImages", id), { img: D.img });
+    await batch.commit();
+    FULL[id] = D.img; S.workDraft = null; toast("Фото опубликовано. Клиенты уже видят его.");
+  } catch (err) { toast(errText(err)); }
+  S.wBusy = false; render(true);
+}
+async function deleteWork(id) {
+  try { const batch = writeBatch(db); batch.delete(doc(db, "works", id)); batch.delete(doc(db, "workImages", id)); await batch.commit(); toast("Фото удалено"); }
+  catch (err) { toast(errText(err)); }
+  S.armed = null; render(true);
 }
 function resizeImage(file) {
   return new Promise((resolve, reject) => {

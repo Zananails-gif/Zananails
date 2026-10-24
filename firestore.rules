@@ -81,5 +81,27 @@ service cloud.firestore {
       allow update: if isOwner();
       allow delete: if isOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
     }
+
+    // Фото работ: видят все; добавляет владелец или мастер (только свои); скрывает владелец
+    match /works/{id} {
+      allow read: if true;
+      allow create: if (isOwner() || (myArtist() != '' && request.resource.data.artist == myArtist()))
+        && request.resource.data.keys().hasOnly(['artist','cat','title','thumb','created','hidden'])
+        && request.resource.data.artist is string && request.resource.data.artist.size() < 40
+        && request.resource.data.cat is string && request.resource.data.cat.size() < 40
+        && request.resource.data.title is string && request.resource.data.title.size() <= 60
+        && request.resource.data.thumb is string && request.resource.data.thumb.size() < 120000
+        && request.resource.data.hidden == false;
+      allow update: if isOwner();
+      allow delete: if isOwner() || (myArtist() != '' && resource.data.artist == myArtist());
+    }
+    // Фото в полном размере (отдельно, чтобы галерея грузилась быстро)
+    match /workImages/{id} {
+      allow read: if true;
+      allow create: if (isOwner() || (myArtist() != '' && getAfter(/databases/$(database)/documents/works/$(id)).data.artist == myArtist()))
+        && request.resource.data.keys().hasOnly(['img'])
+        && request.resource.data.img is string && request.resource.data.img.size() < 900000;
+      allow delete: if isOwner() || (myArtist() != '' && get(/databases/$(database)/documents/works/$(id)).data.artist == myArtist());
+    }
   }
 }
