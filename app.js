@@ -108,7 +108,7 @@ let USER = null, authReady = false, ownerDenied = false;
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
-let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null, NEWB = [];
+let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null, NEWB = [], AVATARS = {};
 const NEW_WINDOW = 2 * 24 * 3600 * 1000;
 let inboxSeen = lsGet("nb-inbox-seen", 0);
 const OWNER_UID = firebaseConfig.ownerUid || "";
@@ -131,6 +131,9 @@ const S = {
 
 const svcById = id => (SET ? SET.services.find(s => s.id === id) : null);
 const artistName = id => (SET && SET.artists.find(a => a.id === id) || {}).name || "Мастер";
+// master's round photo, or the first letter of the name when there is no photo yet
+const avatar = (id, name, px) => { const st = px ? `width:${px}px;height:${px}px;font-size:${Math.round(px * 0.41)}px` : "";
+  return AVATARS[id] ? `<div class="thumb avatar av-img" style="${st}"><img src="${esc(AVATARS[id])}" alt=""></div>` : `<div class="thumb avatar" style="${st}">${esc((name || "?").charAt(0))}</div>`; };
 const isClosed = k => !SET || SET.closedDays.includes(dateOf(k).getDay());
 
 function artistFree(aid, date, start, dur, ignoreId) {
@@ -261,6 +264,9 @@ onSnapshot(query(collection(db, "busy"), where("date", ">=", addDays(todayKey(),
 }, () => {});
 
 // Photo gallery: customers only get photos that are not hidden.
+onSnapshot(collection(db, "avatars"), snap => {
+  const m = {}; snap.docs.forEach(d => { const x = d.data(); if (x && x.img) m[d.id] = x.img; }); AVATARS = m; render(true);
+}, () => {});
 onSnapshot(query(collection(db, "works"), where("hidden", "==", false)), snap => {
   PUB_WORKS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0));
   renderSoon(true);
@@ -440,7 +446,7 @@ function vHome() {
   </section>
   <section class="stack">
     <h2 class="h2">Наши мастера</h2>
-    <div class="list">${SET.artists.map(a => `<div class="row"><div class="thumb avatar" style="width:44px;height:44px;font-size:18px">${esc((a.name || "?").charAt(0))}</div><div style="flex:1;min-width:0"><b>${esc(a.name)}</b><div class="tiny muted">${worksOf(a.id) ? worksOf(a.id) + " " + plural(worksOf(a.id), ["работа", "работы", "работ"]) + " в галерее" : "Мастер ногтевого сервиса"}</div></div>${worksOf(a.id) ? `<button class="linkbtn" data-act="gallery-master" data-v="${esc(a.id)}">Работы ›</button>` : ""}</div>`).join("")}</div>
+    <div class="list">${SET.artists.map(a => `<div class="row">${avatar(a.id, a.name, 44)}<div style="flex:1;min-width:0"><b>${esc(a.name)}</b><div class="tiny muted">${worksOf(a.id) ? worksOf(a.id) + " " + plural(worksOf(a.id), ["работа", "работы", "работ"]) + " в галерее" : "Мастер ногтевого сервиса"}</div></div>${worksOf(a.id) ? `<button class="linkbtn" data-act="gallery-master" data-v="${esc(a.id)}">Работы ›</button>` : ""}</div>`).join("")}</div>
   </section>
   <a class="linkbtn" href="#owner" style="align-self:center;text-decoration:none">Вход для владельца салона</a>`;
 }
@@ -479,7 +485,7 @@ function vArtist() {
     for (let i = 0; i < DAYS_AHEAD; i++) { if (slotsFor(k, o.id, dur).length) { next = "Ближайшее окно: " + (i === 0 ? "сегодня" : i === 1 ? "завтра" : shortDate(k)); break; } k = addDays(k, 1); }
     const on = S.artist === o.id;
     return `<button class="opt" data-act="artist" data-v="${esc(o.id)}" aria-pressed="${on}">
-      <div class="thumb avatar">${o.id === "any" ? "✱" : esc((o.name || "?").charAt(0))}</div>
+      ${o.id === "any" ? `<div class="thumb avatar">✱</div>` : avatar(o.id, o.name)}
       <div class="optbody"><b>${esc(o.name)}</b><span class="tiny muted">${o.role}</span><span class="tiny green">${next}</span></div>
       <div class="check">${on ? ICON.check : ""}</div></button>`;
   }).join("")}</div>`;
@@ -617,7 +623,7 @@ function vPhoto() {
   return `${header(i >= 0 ? (i + 1) + " из " + list.length : "", w.title || "Работа мастера", "gallery")}
   <div class="photo-full"><img src="${esc(FULL[w.id] || w.thumb)}" alt="${esc(w.title || "Работа мастера " + name)}"></div>
   ${list.length > 1 ? `<div class="btns"><button class="btn sm ghost" data-act="photo-nav" data-v="-1">${ICON.back}Предыдущее</button><button class="btn sm ghost" data-act="photo-nav" data-v="1">Следующее${ICON.next}</button></div>` : ""}
-  <div class="card row"><div class="thumb avatar" style="width:48px;height:48px;font-size:20px">${esc(name.charAt(0))}</div>
+  <div class="card row">${avatar(w.artist, name, 48)}
     <div style="min-width:0"><b>Мастер ${esc(name)}</b><div class="small muted">${esc(w.cat || "")} · ${esc(workDate(w))}</div></div></div>`;
 }
 const barPhoto = () => { const w = PUB_WORKS.find(x => x.id === S.photo); return w && SET.artists.some(a => a.id === w.artist) ? `<div class="cta wrap"><button class="btn" style="flex:1" data-act="book-master" data-v="${esc(w.artist)}">Записаться к мастеру ${esc(artistName(w.artist))}</button></div>` : clientTabs(); };
@@ -674,7 +680,10 @@ function vNoStaff() {
 function vMasterAccount() {
   return `<h1 class="h1" style="font-size:26px">Аккаунт</h1>
   <div class="card stack">
-    <p class="small">Вы вошли как мастер <b>${esc(artistName(MY_ARTIST))}</b></p>
+    <div class="row" style="gap:14px">${avatar(MY_ARTIST, artistName(MY_ARTIST), 72)}
+      <div style="min-width:0"><p class="small" style="margin:0">Вы вошли как мастер <b>${esc(artistName(MY_ARTIST))}</b></p>
+      <button class="linkbtn" style="padding-left:0" data-act="av-pick" data-v="${esc(MY_ARTIST)}" ${S.avBusy ? "disabled" : ""}>${S.avBusy ? "Загружаем фото…" : AVATARS[MY_ARTIST] ? "Сменить фото профиля" : "Добавить фото профиля"}</button></div></div>
+    <p class="tiny muted" style="margin-top:-4px">Клиенты видят это фото, когда выбирают мастера.</p>
     <p class="small muted">${esc(USER.email || "")}</p>
     <p class="tiny muted">Вы видите только свои записи. Название салона, цены и список мастеров меняет владелец.</p>
     <a class="btn sm ghost" href="#">Открыть приложение для клиентов</a>
@@ -816,10 +825,12 @@ function vSettings() {
     <p class="small muted">Чтобы мастер мог входить и видеть свои записи, впишите его email. Мастер открывает ссылку кабинета, нажимает «Я мастер — регистрация» и сам придумывает пароль.</p>
     ${D.artists.map((a, i) => `<div class="ed">
       <div style="display:flex;gap:8px;align-items:center">
+        <button class="av-btn" data-act="av-pick" data-v="${esc(a.id)}" aria-label="Фото профиля: ${esc(a.name || "мастер")}">${avatar(a.id, a.name, 44)}<span class="av-cam">${ICON.camera}</span></button>
         <input class="inp" id="art${i}" aria-label="Имя мастера ${i + 1}" data-d="artist:${i}" maxlength="40" value="${esc(a.name)}" placeholder="Имя мастера">
         ${D.artists.length > 1 ? `<button class="icon-btn" data-act="del-artist" data-v="${i}" aria-label="Удалить мастера ${esc(a.name)}">${ICON.trash}</button>` : ""}</div>
       <input class="inp" id="artEmail${i}" type="email" inputmode="email" autocomplete="off" aria-label="Email мастера ${esc(a.name)} для входа" data-d="artistEmail:${i}" maxlength="80" value="${esc(a.email || "")}" placeholder="Email для входа (необязательно)">
     </div>`).join("")}
+    <p class="tiny muted">Нажмите на кружок, чтобы поставить фото мастера. Мастер может сменить своё фото сам во вкладке «Аккаунт».</p>
     <p class="tiny muted">Ссылка для входа мастеров: <b style="user-select:all;word-break:break-all">${esc(location.origin + location.pathname)}#owner</b></p>
     <button class="btn sm ghost" data-act="add-artist">${ICON.plus}Добавить мастера</button>
   </div>
@@ -911,7 +922,7 @@ function vReport() {
     const top = Object.keys(cnt).sort((x, y) => cnt[y] - cnt[x])[0];
     const pct = total ? Math.round(r / total * 100) : 0;
     return `<button class="card stack repcard" data-act="rep-master" data-v="${esc(a.id)}">
-      <div class="row"><div class="thumb avatar" style="width:44px;height:44px;font-size:18px">${esc(a.name.charAt(0))}</div>
+      <div class="row">${avatar(a.id, a.name, 44)}
         <div style="flex:1;min-width:0;text-align:left"><b>${esc(a.name)}</b><div class="tiny muted">${n} ${plural(n, ["клиент", "клиента", "клиентов"])} · ${pct}% выручки</div></div>
         <b class="price">${rub(r)}</b></div>
       <div class="bar8"><i style="width:${pct}%"></i></div>
@@ -1087,6 +1098,7 @@ document.addEventListener("click", async e => {
     case "cat": S.cat = v; if (S.view !== "services") { S.sel = []; S.artist = "any"; S.date = null; S.time = null; S.tried = false; } go("services"); break;
     case "tab-cat": S.cat = v; render(true); break;
     case "w-pick": pickWorkPhoto(); break;
+    case "av-pick": if (!S.avBusy && (ROLE === "owner" || v === MY_ARTIST)) pickImage(f => saveAvatar(v, f)); break;
     case "svc": S.sel = S.sel.includes(v) ? S.sel.filter(x => x !== v) : S.sel.concat(v); S.time = null; S.date = null; render(true); break;
     case "artist": S.artist = v; S.time = null; S.date = null; render(true); break;
     case "date": S.date = v; S.time = null; render(true); break;
@@ -1187,16 +1199,33 @@ document.addEventListener("submit", e => {
 });
 
 /* photo picker lives outside the app screen, so live updates can't remove it while the gallery is open */
-let workPicker = null;
-function pickWorkPhoto() {
+let workPicker = null, pickTarget = null;
+function pickImage(onFile) {
+  pickTarget = onFile;
   if (!workPicker) {
     workPicker = document.createElement("input");
     workPicker.type = "file"; workPicker.accept = "image/*"; workPicker.id = "workFile";
     workPicker.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0";
     document.body.appendChild(workPicker);
-    workPicker.addEventListener("change", () => { const f = workPicker.files && workPicker.files[0]; if (f) usePickedPhoto(f); workPicker.value = ""; });
+    workPicker.addEventListener("change", () => { const f = workPicker.files && workPicker.files[0]; if (f && pickTarget) pickTarget(f); workPicker.value = ""; });
   }
   workPicker.click();
+}
+const pickWorkPhoto = () => pickImage(usePickedPhoto);
+// square-crop the photo to a small round-avatar picture and save it straight away
+async function saveAvatar(id, file) {
+  S.avBusy = true; render(true);
+  try {
+    const img = await loadImg(file), side = Math.min(img.width, img.height);
+    const c = document.createElement("canvas"); c.width = c.height = 240;
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 240, 240);
+    ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 240, 240);
+    let q = 0.85, out = c.toDataURL("image/jpeg", q);
+    while (out.length > 45000 && q > 0.4) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
+    await setDoc(doc(db, "avatars", id), { img: out, updated: Date.now() });
+    AVATARS[id] = out; toast("Фото профиля сохранено");
+  } catch (err) { toast(err && err.message === "bad image" ? "Не удалось открыть фото. Попробуйте другое." : errText(err)); }
+  S.avBusy = false; render(true);
 }
 async function usePickedPhoto(file) {
     S.wBusy = true; render(true);

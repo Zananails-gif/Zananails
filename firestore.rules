@@ -97,6 +97,13 @@ service cloud.firestore {
       allow update: if isOwner();
       allow delete: if isOwner() || (myArtist() != '' && resource.data.artist == myArtist());
     }
+    // Фото профиля мастера: видят все; меняет владелец или сам мастер (только своё)
+    match /avatars/{artistId} {
+      allow read: if true;
+      allow write: if (isOwner() || (myArtist() != '' && artistId == myArtist()))
+        && request.resource.data.keys().hasOnly(['img','updated'])
+        && request.resource.data.img is string && request.resource.data.img.size() < 80000;
+    }
     // Фото в полном размере (отдельно, чтобы галерея грузилась быстро)
     match /workImages/{id} {
       allow read: if true;
