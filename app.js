@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getFirestore, doc, collection, onSnapshot, setDoc, updateDoc,
+  getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, getDocFromServer,
   writeBatch, query, where, orderBy, limit
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
@@ -181,7 +181,10 @@ const auth = getAuth(fbApp);
 const settingsRef = doc(db, "settings", "salon");
 
 /* ================= realtime data ================= */
-onSnapshot(settingsRef, snap => {
+onSnapshot(settingsRef, { includeMetadataChanges: true }, snap => {
+  // A "not found" answer from the offline cache (weak connection) is not trusted:
+  // keep what we have and wait for the server.
+  if (!snap.exists() && snap.metadata.fromCache) return;
   SET = snap.exists() ? normalize(snap.data()) : null;
   setLoaded = true; setError = false;
   maybeCreateDefaults();
@@ -245,8 +248,13 @@ function watchJday() {
 async function maybeCreateDefaults() {
   if (!USER || !setLoaded || SET || setError || creatingDefaults || ownerDenied) return;
   creatingDefaults = true;
-  try { await setDoc(settingsRef, defaultSettings()); toast("Салон создан. Заполните настройки."); S.view = "settings"; S.draft = null; }
-  catch (e) { ownerDenied = true; }
+  try {
+    // Only create the salon if the server confirms it really doesn't exist yet,
+    // so saved settings (name, logo, prices) are never overwritten.
+    const check = await getDocFromServer(settingsRef);
+    if (check.exists()) { SET = normalize(check.data()); creatingDefaults = false; renderSoon(true); return; }
+    await setDoc(settingsRef, defaultSettings()); toast("Салон создан. Заполните настройки."); S.view = "settings"; S.draft = null; }
+  catch (e) { if (e && e.code === "permission-denied") ownerDenied = true; }
   creatingDefaults = false;
   renderSoon(true);
 }
@@ -749,7 +757,9 @@ document.addEventListener("change", async e => {
   const t = e.target;
   if (t.dataset.d && t.tagName === "SELECT") t.dispatchEvent(new Event("input", { bubbles: true }));
   if (t.id === "logoFile" && t.files && t.files[0]) {
-    try { S.draft.logo = await resizeImage(t.files[0]); S.dirty = true; render(true); }
+    S.dirty = true; S.draftErr = "";
+    const draft = S.draft;
+    try { const logo = await resizeImage(t.files[0]); draft.logo = logo; S.draft = draft; S.dirty = true; render(true); }
     catch (err) { toast("Не удалось открыть картинку. Попробуйте другой файл."); }
   }
   if (t.dataset.move && t.value) moveBooking(t.dataset.move, t.value);
