@@ -171,7 +171,7 @@ main{flex:1;display:flex;flex-direction:column;gap:18px;padding-top:16px;padding
 
 .scrim{position:fixed;inset:0;background:rgba(20,10,15,.45);z-index:40;display:flex;align-items:flex-end;justify-content:center}
 .sheet{background:var(--bg);width:100%;max-width:480px;border-radius:22px 22px 0 0;padding-top:20px;padding-bottom:calc(20px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:14px;max-height:88%;overflow-y:auto}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(140px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;font-weight:600;z-index:50;max-width:calc(100% - 32px);text-align:center}
+.toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(72px + env(safe-area-inset-top,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;font-weight:600;z-index:50;max-width:calc(100% - 32px);text-align:center}
 
 .ed{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--bg)}
 .ed-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,.8fr) 44px;gap:8px;align-items:end}

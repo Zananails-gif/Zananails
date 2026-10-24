@@ -59,13 +59,15 @@ const ICON = {
   polish: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="11" width="10" height="10" rx="2"/><path d="M9 11V8h6v3M10.5 8V3h3v5"/></svg>',
   eye: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   eyeOff: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.5-.6 4.9-1.4"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  wa: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 20.5l1.3-4A8.5 8.5 0 1 1 8 19.3z"/><path d="M9 8.5c0 3.5 2.5 6.5 6.5 6.5l1-1.5-2-1-1 1c-1.2-.4-2.6-1.8-3-3l1-1-1-2z"/></svg>',
+  tg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/><path d="M9 13l9-7"/></svg>',
   info: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" style="flex-shrink:0;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>'
 };
 
 /* ================= default salon settings ================= */
 function defaultSettings() {
   return {
-    name: "Название салона", area: "Город, адрес", phone: "", logo: "",
+    name: "Название салона", area: "Город, адрес", phone: "", telegram: "", logo: "",
     open: 9 * 60, close: 19 * 60, closedDays: [0], pediChairs: 1,
     artists: [{ id: "a1", name: "Мастер 1" }, { id: "a2", name: "Мастер 2" }],
     services: [
@@ -171,6 +173,42 @@ function hoursText() {
   const days = runs.map(r => r.length > 2 ? DOW[r[0]] + "–" + DOW[r[r.length - 1]] : r.map(d => DOW[d]).join(", ")).join(", ");
   return days + ", " + hm(SET.open) + "–" + hm(SET.close);
 }
+
+/* ================= WhatsApp / Telegram messages ================= */
+// Phone number for wa.me: digits only, with country code (Russian 8XXXXXXXXXX → 7XXXXXXXXXX).
+function waNumber(phone) {
+  let d = String(phone || "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.length === 11 && d.startsWith("8")) d = "7" + d.slice(1);
+  return d.length >= 8 ? d : "";
+}
+const tgUser = t => String(t || "").trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "").replace(/[^A-Za-z0-9_]/g, "");
+const appLink = () => location.origin + location.pathname;
+function waLink(phone, text) { const n = waNumber(phone); return n ? "https://wa.me/" + n + "?text=" + encodeURIComponent(text) : ""; }
+function tgLink(user, text) {
+  const u = tgUser(user);
+  return u ? "https://t.me/" + u + "?text=" + encodeURIComponent(text)
+    : "https://t.me/share/url?url=" + encodeURIComponent(appLink()) + "&text=" + encodeURIComponent(text);
+}
+function bookingLine(b) {
+  return longDate(b.date).toLowerCase() + " в " + hm(b.start) + ", " + ((b.serviceNames || []).join(", ") || "услуга") + ", мастер " + artistName(b.artist);
+}
+function msgToSalon(b) {
+  return "Здравствуйте! Я записался(-ась) онлайн: " + bookingLine(b) + ". Имя: " + (b.name || "") + ", телефон: " + (b.phone || "") + ".";
+}
+function msgToClient(b) {
+  const salon = (SET && SET.name) || "салон";
+  if (b.status === "cancelled") return "Здравствуйте, " + (b.name || "") + "! К сожалению, ваша запись в «" + salon + "» на " + longDate(b.date).toLowerCase() + " в " + hm(b.start) + " отменена. Выберите другое время: " + appLink();
+  return "Здравствуйте, " + (b.name || "") + "! Ваша запись в «" + salon + "» подтверждена: " + bookingLine(b) + "." + (SET && SET.area ? " Адрес: " + SET.area + "." : "") + " Ждём вас!";
+}
+function msgButtons(label, wa, tg) {
+  if (!wa && !tg) return "";
+  return `<div class="stack" style="gap:6px"><span class="tiny muted" style="font-weight:600">${label}</span><div class="btns">
+    ${wa ? `<a class="btn sm ghost msg-wa" href="${esc(wa)}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a>` : ""}
+    ${tg ? `<a class="btn sm ghost msg-tg" href="${esc(tg)}" target="_blank" rel="noopener">${ICON.tg}Telegram</a>` : ""}</div></div>`;
+}
+const salonMsgButtons = b => msgButtons("Написать салону", waLink(SET.phone, msgToSalon(b)), tgLink(SET.telegram, msgToSalon(b)));
+const clientMsgButtons = b => b.phone ? msgButtons(b.status === "cancelled" ? "Сообщить клиенту об отмене" : "Сообщить клиенту о записи", waLink(b.phone, msgToClient(b)), tgLink("", msgToClient(b))) : "";
 
 /* ================= toast ================= */
 let toastTimer;
@@ -462,6 +500,7 @@ function vDetails() {
       <input id="fName" name="name" autocomplete="name" maxlength="60" value="${esc(f.name)}" placeholder="Имя и фамилия"></label>
     <label class="field" for="fPhone">Телефон ${phoneErr ? '<span class="err">Введите корректный номер телефона</span>' : ""}
       <input id="fPhone" name="phone" type="tel" autocomplete="tel" maxlength="25" value="${esc(f.phone)}" placeholder="+7 900 000-00-00"></label>
+    <p class="tiny muted" style="margin-top:-6px">С кодом страны — на этот номер салон пришлёт подтверждение в WhatsApp.</p>
     <label class="field" for="fNote">Комментарий для мастера (необязательно)
       <input id="fNote" name="note" maxlength="250" value="${esc(f.note)}" placeholder="Идея дизайна, аллергии…"></label>
   </form>`;
@@ -481,6 +520,7 @@ function bookingCard(b) {
       <div class="stack" style="gap:4px;min-width:0"><span class="when">${esc(shortDate(b.date))} · ${hm(b.start)}</span>
         <b style="font-size:16px">${esc(svcs)}</b><span class="small muted">${esc(SET.name)} · ${esc(artistName(b.artist))}</span></div>
       ${statusPill(b)}</div>
+    ${canCancel ? salonMsgButtons(b) : ""}
     ${canCancel ? (S.armed === b.id
       ? `<div class="btns"><button class="btn sm solid-danger" data-act="cancel" data-v="${esc(b.id)}">Да, отменить</button><button class="btn sm ghost" data-act="disarm">Оставить запись</button></div>`
       : `<button class="btn danger" data-act="arm" data-v="${esc(b.id)}">Отменить запись</button>`) : ""}
@@ -495,7 +535,7 @@ function vBookings() {
   const list = S.bookTab === "upcoming" ? up : past;
   const first = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
   return `<h1 class="h1" style="font-size:26px">Мои записи</h1>
-  ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">Салон скоро подтвердит запись. Статус обновится здесь.</div></div></div>` : ""}
+  ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">Салон скоро подтвердит запись. Статус обновится здесь. Чтобы салон узнал сразу, отправьте ему запись в WhatsApp или Telegram — кнопки ниже.</div></div></div>` : ""}
   <div class="seg" role="group" aria-label="Показать"><button data-act="btab" data-v="upcoming" aria-pressed="${S.bookTab === "upcoming"}">Предстоящие</button><button data-act="btab" data-v="past" aria-pressed="${S.bookTab === "past"}">Прошедшие и отменённые</button></div>
   <div class="list">${list.length ? list.map(bookingCard).join("") : `<div class="empty">${S.bookTab === "upcoming" ? "Предстоящих записей пока нет." : "Здесь пока ничего нет."}</div>`}</div>
   <p class="tiny muted">Записи сохраняются на этом телефоне. Если вы записывались с другого телефона, они будут видны там.</p>
@@ -606,6 +646,7 @@ function vInbox() {
       ${b.note ? `<div class="sumrow"><span class="muted">Комментарий</span><span>«${esc(b.note)}»</span></div>` : ""}
     </div>
     <div class="btns"><button class="btn sm" data-act="accept" data-v="${esc(b.id)}">Подтвердить</button><button class="btn sm ghost" data-act="open" data-v="${esc(b.id)}">Подробнее</button></div>
+    <p class="tiny muted">После подтверждения откроется окно с кнопками WhatsApp и Telegram, чтобы сообщить клиенту.</p>
   </div>`).join("") : `<div class="empty">Новых записей нет. Когда клиент запишется, запись появится здесь.</div>`}
   ${recent.length ? `<h2 class="h2">Последние действия</h2><div class="card" style="padding:0">${recent.map((b, i) => `<button data-act="open" data-v="${esc(b.id)}" style="display:flex;gap:12px;align-items:center;padding:14px;width:100%;text-align:left;background:transparent;border:0;${i ? "border-top:1px solid var(--line)" : ""}">
     <span style="width:10px;height:10px;border-radius:5px;flex-shrink:0;background:${b.status === "cancelled" ? "var(--bad)" : "var(--ok)"}"></span>
@@ -637,7 +678,9 @@ function vSettings() {
     <h2 class="h2">Салон</h2>
     <label class="field" for="dName">Название салона<input id="dName" data-d="name" maxlength="60" value="${esc(D.name)}"></label>
     <label class="field" for="dArea">Город и адрес<input id="dArea" data-d="area" maxlength="120" value="${esc(D.area)}"></label>
-    <label class="field" for="dPhone">Телефон салона<input id="dPhone" data-d="phone" type="tel" maxlength="25" value="${esc(D.phone)}" placeholder="+7 900 000-00-00"></label>
+    <label class="field" for="dPhone">Телефон салона (с кодом страны, для звонков и WhatsApp)<input id="dPhone" data-d="phone" type="tel" maxlength="25" value="${esc(D.phone)}" placeholder="+7 900 000-00-00"></label>
+    <label class="field" for="dTg">Telegram салона (необязательно)<input id="dTg" data-d="telegram" maxlength="40" autocomplete="off" value="${esc(D.telegram || "")}" placeholder="@zananails"></label>
+    <p class="tiny muted">Клиенты смогут одним нажатием отправить вам свою запись в WhatsApp (на телефон салона) или в Telegram (на этот ник).</p>
   </div>
   <div class="card stack">
     <h2 class="h2">Часы работы</h2>
@@ -719,7 +762,7 @@ function sheet() {
     </div>
     ${b.status !== "cancelled" && others.length ? `<label class="field" for="moveArtist">Передать другому мастеру
       <select id="moveArtist" data-move="${esc(b.id)}"><option value="">Оставить: ${esc(artistName(b.artist))}</option>${others.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join("")}</select></label>` : ""}
-    ${b.status === "pending" ? `<button class="btn" data-act="accept" data-v="${esc(b.id)}">Подтвердить запись</button>` : ""}
+    ${b.status === "pending" ? `<button class="btn" data-act="accept" data-v="${esc(b.id)}">Подтвердить запись</button>` : clientMsgButtons(b)}
     ${b.status !== "cancelled" ? (S.armed === b.id
       ? `<div class="btns"><button class="btn sm solid-danger" data-act="cancel" data-v="${esc(b.id)}">Да, отменить</button><button class="btn sm ghost" data-act="disarm">Не отменять</button></div>`
       : `<button class="btn danger" data-act="arm" data-v="${esc(b.id)}">Отменить запись</button>`) : ""}
@@ -817,7 +860,7 @@ document.addEventListener("click", async e => {
     case "disarm": S.armed = null; render(true); break;
     case "cancel": cancelBooking(v); break;
     case "accept":
-      try { await updateDoc(doc(db, "bookings", v), { status: "confirmed", updated: Date.now() }); S.sheet = null; toast("Запись подтверждена"); }
+      try { await updateDoc(doc(db, "bookings", v), { status: "confirmed", updated: Date.now() }); S.sheet = v; toast("Запись подтверждена. Сообщите клиенту."); }
       catch (err) { toast(errText(err)); }
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
@@ -858,7 +901,7 @@ document.addEventListener("input", e => {
   else if (t.id === "lPw") S.login.pw = t.value;
   else if (t.dataset.d && S.draft) {
     const D = S.draft, p = t.dataset.d.split(":");
-    if (p[0] === "name" || p[0] === "area" || p[0] === "phone") D[p[0]] = t.value;
+    if (p[0] === "name" || p[0] === "area" || p[0] === "phone" || p[0] === "telegram") D[p[0]] = t.value;
     else if (p[0] === "open" || p[0] === "close") { const m = parseHM(t.value); if (m != null) D[p[0]] = m; }
     else if (p[0] === "pediChairs") { const n = parseInt(t.value, 10); D.pediChairs = isNaN(n) ? 0 : n; }
     else if (p[0] === "artist") D.artists[+p[1]].name = t.value;
@@ -951,7 +994,7 @@ async function moveBooking(id, artist) {
 async function saveSettings() {
   const D = S.draft;
   const fail = msg => { S.draftErr = msg; refreshChrome(); };
-  D.name = (D.name || "").trim(); D.area = (D.area || "").trim(); D.phone = (D.phone || "").trim();
+  D.name = (D.name || "").trim(); D.area = (D.area || "").trim(); D.phone = (D.phone || "").trim(); D.telegram = tgUser(D.telegram);
   D.artists = D.artists.map(a => ({ id: a.id, name: (a.name || "").trim(), email: (a.email || "").trim().toLowerCase() }));
   D.services = D.services.map(s => ({ id: s.id, cat: s.cat, name: (s.name || "").trim(), dur: Math.round((Number(s.dur) || 0) / 5) * 5, price: Math.round(Number(s.price) || 0) }));
   if (!D.name) return fail("Укажите название салона");
