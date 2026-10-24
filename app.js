@@ -71,7 +71,7 @@ const ICON = {
 function defaultSettings() {
   return {
     name: "Название салона", area: "Город, адрес", phone: "", telegram: "", logo: "",
-    open: 9 * 60, close: 19 * 60, closedDays: [0], pediChairs: 1,
+    open: 9 * 60, close: 19 * 60, closedDays: [0], pediChairs: 1, autoConfirm: true,
     artists: [{ id: "a1", name: "Мастер 1" }, { id: "a2", name: "Мастер 2" }],
     services: [
       { id: "s1", cat: "Маникюр", name: "Классический маникюр", dur: 45, price: 1500 },
@@ -97,6 +97,7 @@ function normalize(d) {
   if (typeof out.open !== "number") out.open = def.open;
   if (typeof out.close !== "number") out.close = def.close;
   if (!(out.pediChairs >= 1)) out.pediChairs = 1;
+  if (out.autoConfirm !== false) out.autoConfirm = true;
   return out;
 }
 
@@ -107,7 +108,9 @@ let USER = null, authReady = false, ownerDenied = false;
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
-let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null;
+let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null, NEWB = [];
+const NEW_WINDOW = 2 * 24 * 3600 * 1000;
+let inboxSeen = lsGet("nb-inbox-seen", 0);
 const OWNER_UID = firebaseConfig.ownerUid || "";
 let pendingLoaded = false;
 const MY = {};
@@ -289,11 +292,11 @@ onAuthStateChanged(auth, user => {
 function stopWatches() {
   unsubOwner.forEach(u => u()); unsubOwner = [];
   if (unsubJday) { unsubJday(); unsubJday = null; }
-  PENDING = []; RECENT = []; JDAY = []; MASTER_ALL = []; STAFF = {}; ALL_WORKS = []; REPORT = null; pendingLoaded = false;
+  PENDING = []; RECENT = []; JDAY = []; MASTER_ALL = []; STAFF = {}; ALL_WORKS = []; REPORT = null; NEWB = []; pendingLoaded = false;
 }
 function notifyNew(before) {
   if (pendingLoaded) {
-    const fresh = PENDING.filter(b => !before.has(b.id));
+    const fresh = NEWB.filter(b => !before.has(b.id) && b.status !== "cancelled");
     if (fresh.length) { toast("Новая запись: " + fresh[0].name); try { navigator.vibrate && navigator.vibrate(200); } catch (e) {} }
   }
   pendingLoaded = true;
@@ -320,8 +323,13 @@ async function resolveRole(user) {
 function startOwnerWatch() {
   const denied = () => { ownerDenied = true; renderSoon(true); };
   unsubOwner.push(onSnapshot(query(collection(db, "bookings"), where("status", "==", "pending")), snap => {
-    const before = new Set(PENDING.map(b => b.id));
     PENDING = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    renderSoon(true);
+  }, denied));
+  // every booking made in the last 2 days (also the automatically confirmed ones)
+  unsubOwner.push(onSnapshot(query(collection(db, "bookings"), where("created", ">=", Date.now() - NEW_WINDOW)), snap => {
+    const before = new Set(NEWB.map(b => b.id));
+    NEWB = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     notifyNew(before);
     renderSoon(true);
   }, denied));
@@ -339,7 +347,7 @@ function startOwnerWatch() {
 // A master only ever loads their own bookings.
 function startMasterWatch() {
   unsubOwner.push(onSnapshot(query(collection(db, "bookings"), where("artist", "==", MY_ARTIST)), snap => {
-    const before = new Set(PENDING.map(b => b.id));
+    const before = new Set(NEWB.map(b => b.id));
     MASTER_ALL = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     deriveMaster();
     notifyNew(before);
@@ -350,6 +358,7 @@ function startMasterWatch() {
 function deriveMaster() {
   const yday = addDays(todayKey(), -1);
   PENDING = MASTER_ALL.filter(b => b.status === "pending" && b.date >= yday);
+  NEWB = MASTER_ALL.filter(b => (b.created || 0) >= Date.now() - NEW_WINDOW);
   RECENT = MASTER_ALL.filter(b => b.status !== "pending").sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 15);
   JDAY = MASTER_ALL.filter(b => b.date === S.jDate);
 }
@@ -560,7 +569,7 @@ function vBookings() {
   const list = S.bookTab === "upcoming" ? up : past;
   const first = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
   return `<h1 class="h1" style="font-size:26px">Мои записи</h1>
-  ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">Салон скоро подтвердит запись. Статус обновится здесь. Чтобы салон узнал сразу, отправьте ему запись в WhatsApp или Telegram — кнопки ниже.</div></div></div>` : ""}
+  ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">${S.lastBooked === "pending" ? "Салон скоро подтвердит запись. Статус обновится здесь." : "Запись подтверждена. Ждём вас!"} Можно также отправить запись салону в WhatsApp или Telegram — кнопки ниже.</div></div></div>` : ""}
   <div class="seg" role="group" aria-label="Показать"><button data-act="btab" data-v="upcoming" aria-pressed="${S.bookTab === "upcoming"}">Предстоящие</button><button data-act="btab" data-v="past" aria-pressed="${S.bookTab === "past"}">Прошедшие и отменённые</button></div>
   <div class="list">${list.length ? list.map(bookingCard).join("") : `<div class="empty">${S.bookTab === "upcoming" ? "Предстоящих записей пока нет." : "Здесь пока ничего нет."}</div>`}</div>
   <p class="tiny muted">Записи сохраняются на этом телефоне. Если вы записывались с другого телефона, они будут видны там.</p>
@@ -710,6 +719,8 @@ function vJournal() {
 function vInbox() {
   const pending = PENDING.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
   const recent = RECENT.filter(b => b.status !== "pending").slice(0, 10);
+  const fresh = NEWB.filter(b => b.status === "confirmed").sort((a, b) => (b.created || 0) - (a.created || 0));
+  if (S.view === "inbox") { const mx = Math.max(inboxSeen, ...NEWB.map(b => b.created || 0)); if (mx > inboxSeen) { inboxSeen = mx; lsSet("nb-inbox-seen", mx); } }
   const ago = t => { const m = Math.round((Date.now() - t) / 60000); if (m < 1) return "только что"; if (m < 60) return m + " мин назад"; if (m < 1440) return Math.round(m / 60) + " ч назад"; const d = Math.round(m / 1440); return d + " " + plural(d, ["день", "дня", "дней"]) + " назад"; };
   return `<h1 class="h1" style="font-size:26px">Новые записи</h1>
   ${pending.length ? pending.map(b => `<div class="card stack" style="border:2px solid var(--accent)">
@@ -725,7 +736,22 @@ function vInbox() {
     </div>
     <div class="btns"><button class="btn sm" data-act="accept" data-v="${esc(b.id)}">Подтвердить</button><button class="btn sm ghost" data-act="open" data-v="${esc(b.id)}">Подробнее</button></div>
     <p class="tiny muted">После подтверждения откроется окно с кнопками WhatsApp и Telegram, чтобы сообщить клиенту.</p>
-  </div>`).join("") : `<div class="empty">Новых записей нет. Когда клиент запишется, запись появится здесь.</div>`}
+  </div>`).join("") : ""}
+  ${fresh.length ? `${pending.length ? `<h2 class="h2">Подтверждены автоматически</h2>` : ""}${fresh.map(b => `<div class="card stack">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="pill p-ok">НОВАЯ · подтверждена</span><span class="tiny muted">${ago(b.created || Date.now())}</span></div>
+    <div class="row"><div class="biglogo" style="width:44px;height:44px;border-radius:22px;font-size:18px">${esc((b.name || "?").charAt(0).toUpperCase())}</div>
+      <div style="min-width:0"><b style="font-size:16px">${esc(b.name)}</b><div class="small muted" style="user-select:all">${esc(b.phone)}</div></div></div>
+    <div class="sum" style="background:var(--bg);border-radius:12px;padding:12px">
+      <div class="sumrow"><span class="muted">Когда</span><span style="font-weight:700">${esc(shortDate(b.date))}, ${hm(b.start)}</span></div>
+      <div class="sumrow"><span class="muted">Услуги</span><span>${esc((b.serviceNames || []).join(", "))}</span></div>
+      <div class="sumrow"><span class="muted">Мастер</span><span>${esc(artistName(b.artist))}</span></div>
+      <div class="sumrow"><span class="muted">Итого</span><span class="price">${rub(b.total)}</span></div>
+      ${b.note ? `<div class="sumrow"><span class="muted">Комментарий</span><span>«${esc(b.note)}»</span></div>` : ""}
+    </div>
+    ${clientMsgButtons(b)}
+    <button class="btn sm ghost" data-act="open" data-v="${esc(b.id)}">Подробнее</button>
+  </div>`).join("")}` : ""}
+  ${!pending.length && !fresh.length ? `<div class="empty">Новых записей за 2 дня нет. Когда клиент запишется, запись появится здесь.</div>` : ""}
   ${recent.length ? `<h2 class="h2">Последние действия</h2><div class="card" style="padding:0">${recent.map((b, i) => `<button data-act="open" data-v="${esc(b.id)}" style="display:flex;gap:12px;align-items:center;padding:14px;width:100%;text-align:left;background:transparent;border:0;${i ? "border-top:1px solid var(--line)" : ""}">
     <span style="width:10px;height:10px;border-radius:5px;flex-shrink:0;background:${b.status === "cancelled" ? "var(--bad)" : "var(--ok)"}"></span>
     <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:14px">${esc(b.name)}: ${b.status === "cancelled" ? "запись отменена" : "запись подтверждена"}</b><span class="tiny muted">${esc(shortDate(b.date))}, ${hm(b.start)} · ${esc(artistName(b.artist))}</span></span></button>`).join("")}</div>` : ""}`;
@@ -774,6 +800,11 @@ function vSettings() {
     </div>
     <div class="field">Выходные дни (нажмите, чтобы выбрать)
       <div class="daypick" role="group" aria-label="Выходные дни">${order.map(d => `<button data-act="dayoff" data-v="${d}" aria-pressed="${D.closedDays.includes(d)}">${DOW[d]}</button>`).join("")}</div></div>
+  </div>
+  <div class="card stack">
+    <h2 class="h2">Подтверждение записей</h2>
+    <label class="tick" for="dAuto"><input id="dAuto" type="checkbox" ${D.autoConfirm !== false ? "checked" : ""}> Подтверждать записи автоматически</label>
+    <p class="tiny muted">${D.autoConfirm !== false ? "Клиент сразу видит «Запись подтверждена». Новые записи всё равно появляются во вкладке «Новые»." : "Каждую запись нужно подтвердить вручную во вкладке «Новые»."}</p>
   </div>
   <div class="card stack">
     <h2 class="h2">Педикюрное кресло</h2>
@@ -929,7 +960,7 @@ function vReportMaster() {
 }
 
 function ownerTabs() {
-  const n = PENDING.length;
+  const n = PENDING.length + NEWB.filter(b => b.status === "confirmed" && (b.created || 0) > inboxSeen).length;
   const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
   return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${ROLE === "owner" ? t("report", ICON.chart, "Отчёт") : ""}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
 }
@@ -1145,6 +1176,7 @@ document.addEventListener("change", async e => {
     catch (err) { toast("Не удалось открыть картинку. Попробуйте другой файл."); }
   }
   if (t.dataset.move && t.value) moveBooking(t.dataset.move, t.value);
+  if (t.id === "dAuto" && S.draft) { S.draft.autoConfirm = t.checked; S.dirty = true; S.draftErr = ""; render(true); }
   if (t.id === "wCat" && S.workDraft) S.workDraft.cat = t.value;
   if (t.id === "wArtist" && S.workDraft) S.workDraft.artist = t.value;
   if (t.id === "workFile" && t.files && t.files[0]) {
@@ -1183,19 +1215,27 @@ async function book() {
     date: S.date, start: S.time, dur, artist, anyArtist: S.artist === "any",
     services, serviceNames: services.map(x => svcById(x).name), total: Math.round(selTotal()),
     name: f.name.trim().slice(0, 60), phone: f.phone.trim().slice(0, 25), note: f.note.trim().slice(0, 250),
-    status: "pending", created: now, updated: now, ...(chair ? { chair: true } : {})
+    status: SET.autoConfirm === false ? "pending" : "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {})
   };
   S.saving = true; render(true);
-  try {
+  const save = async () => {
     const batch = writeBatch(db);
     batch.set(doc(db, "bookings", id), data);
     batch.set(doc(db, "busy", id), { date: data.date, start: data.start, dur: data.dur, artist: data.artist, ...(chair ? { chair: true } : {}) });
     await batch.commit();
+  };
+  try {
+    try { await save(); }
+    catch (err) {
+      // older database rules only accept "pending" — fall back so the booking is never lost
+      if (data.status !== "confirmed" || !/permission/i.test(String(err && (err.code || err.message)))) throw err;
+      data.status = "pending"; await save();
+    }
   } catch (err) { S.saving = false; toast(errText(err)); render(true); return; }
   S.saving = false;
   const ids = lsGet("nb-my", []); ids.unshift(id); lsSet("nb-my", ids.slice(0, 30));
   MY[id] = Object.assign({ id }, data); watchMine();
-  S.lastBooked = true; S.bookTab = "upcoming";
+  S.lastBooked = data.status; S.bookTab = "upcoming";
   Object.assign(S, { sel: [], artist: "any", date: null, time: null, tried: false, form: { name: f.name, phone: f.phone, note: "" } });
   S.view = "bookings"; S.armed = null; render(false);
 }

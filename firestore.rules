@@ -30,7 +30,7 @@ service cloud.firestore {
       allow write: if isOwner();
     }
 
-    // Записи клиентов
+    // Записи клиентов (подтверждаются сразу, если в настройках включено «Подтверждать автоматически»)
     match /bookings/{id} {
       // Клиент открывает свою запись только по её секретному номеру.
       // Список: владелец — все записи, мастер — только свои.
@@ -40,7 +40,9 @@ service cloud.firestore {
       allow create: if
         request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated','chair'])
         && request.resource.data.get('chair', false) is bool
-        && request.resource.data.status == 'pending'
+        && (request.resource.data.status == 'pending'
+            || (request.resource.data.status == 'confirmed'
+                && get(/databases/$(database)/documents/settings/salon).data.get('autoConfirm', true) == true))
         && request.resource.data.date is string && request.resource.data.date.size() == 10
         && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
         && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
@@ -72,7 +74,7 @@ service cloud.firestore {
       allow create: if isOwner() || (
         request.resource.data.keys().hasOnly(['date','start','dur','artist','chair'])
         && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.get('chair', false)
-        && getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'pending'
+        && getAfter(/databases/$(database)/documents/bookings/$(id)).data.status in ['pending', 'confirmed']
         && request.resource.data.date == getAfter(/databases/$(database)/documents/bookings/$(id)).data.date
         && request.resource.data.start == getAfter(/databases/$(database)/documents/bookings/$(id)).data.start
         && request.resource.data.dur == getAfter(/databases/$(database)/documents/bookings/$(id)).data.dur
