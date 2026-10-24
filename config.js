@@ -7,5 +7,6 @@ export const firebaseConfig = {
   messagingSenderId: "156020471074",
   appId: "1:156020471074:web:516998ead6c8bdf979e17b",
   measurementId: "G-3CT6KS3R85",
-  databaseId: "default"  // the Firestore database name
+  databaseId: "default",  // the Firestore database name
+  ownerUid: "q1zJeejwznf4FkUuVuOFxK0CUU23"  // salon owner (sees everything)
 };

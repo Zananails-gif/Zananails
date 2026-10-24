@@ -2,9 +2,20 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ШАГ 5: замените q1zJeejwznf4FkUuVuOFxK0CUU23 на UID владельца (Authentication → Users → User UID)
+    // Владелец салона (видит всё)
     function isOwner() {
       return request.auth != null && request.auth.uid == "q1zJeejwznf4FkUuVuOFxK0CUU23";
+    }
+
+    // Мастер: подтверждённый email, который владелец вписал в «Настройки → Мастера».
+    // Возвращает id мастера или '' если это не мастер.
+    function staffEmail() {
+      return request.auth != null && request.auth.token.get('email_verified', false) == true
+        ? request.auth.token.get('email', '') : '';
+    }
+    function myArtist() {
+      return staffEmail() == '' ? ''
+        : get(/databases/$(database)/documents/private/staff).data.get('map', {}).get(staffEmail(), '');
     }
 
     // Настройки салона: читают все, меняет только владелец
@@ -13,14 +24,22 @@ service cloud.firestore {
       allow write: if isOwner();
     }
 
+    // Список email мастеров: видят владелец и мастера, меняет только владелец
+    match /private/{docId} {
+      allow read: if isOwner() || (docId == 'staff' && myArtist() != '');
+      allow write: if isOwner();
+    }
+
     // Записи клиентов
     match /bookings/{id} {
-      // Клиент может открыть свою запись только по её секретному номеру; список видит только владелец
+      // Клиент открывает свою запись только по её секретному номеру.
+      // Список: владелец — все записи, мастер — только свои.
       allow get: if true;
-      allow list: if isOwner();
+      allow list: if isOwner() || (myArtist() != '' && resource.data.artist == myArtist());
 
       allow create: if
-        request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated'])
+        request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated','chair'])
+        && request.resource.data.get('chair', false) is bool
         && request.resource.data.status == 'pending'
         && request.resource.data.date is string && request.resource.data.date.size() == 10
         && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
@@ -32,12 +51,18 @@ service cloud.firestore {
         && request.resource.data.services is list && request.resource.data.services.size() <= 20
         && request.resource.data.serviceNames is list && request.resource.data.serviceNames.size() <= 20;
 
-      // Владелец меняет что угодно; клиент может только отменить свою запись
-      allow update: if isOwner() || (
-        resource.data.status != 'cancelled'
-        && request.resource.data.status == 'cancelled'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
-      );
+      // Владелец меняет что угодно; клиент может только отменить; мастер — подтвердить или отменить свою запись
+      allow update: if isOwner()
+        || (
+          resource.data.status != 'cancelled'
+          && request.resource.data.status == 'cancelled'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+        )
+        || (
+          myArtist() != '' && resource.data.artist == myArtist()
+          && request.resource.data.status in ['confirmed', 'cancelled']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+        );
       allow delete: if isOwner();
     }
 
@@ -45,7 +70,8 @@ service cloud.firestore {
     match /busy/{id} {
       allow read: if true;
       allow create: if isOwner() || (
-        request.resource.data.keys().hasOnly(['date','start','dur','artist'])
+        request.resource.data.keys().hasOnly(['date','start','dur','artist','chair'])
+        && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.get('chair', false)
         && getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'pending'
         && request.resource.data.date == getAfter(/databases/$(database)/documents/bookings/$(id)).data.date
         && request.resource.data.start == getAfter(/databases/$(database)/documents/bookings/$(id)).data.start

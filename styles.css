@@ -107,6 +107,9 @@ main{flex:1;display:flex;flex-direction:column;gap:18px;padding-top:16px;padding
 
 .field{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:600;color:var(--muted)}
 .field input,.field select{height:48px;border-radius:12px;border:1px solid var(--line2);background:var(--surface);padding:0 14px;font-size:16px;color:var(--fg);font-weight:500;width:100%}
+.pw-wrap{position:relative;display:block}
+.pw-wrap input{padding-right:52px!important}
+.pw-eye{position:absolute;right:2px;top:50%;transform:translateY(-50%);width:44px;height:44px;border:0;background:transparent;color:var(--muted);display:flex;align-items:center;justify-content:center;border-radius:10px}
 .field .err{color:var(--bad);font-weight:600}
 .err-box{color:var(--bad);font-weight:600;font-size:13px}
 .sum{display:flex;flex-direction:column;gap:10px}
