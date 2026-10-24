@@ -97,6 +97,30 @@ service cloud.firestore {
       allow update: if isOwner();
       allow delete: if isOwner() || (myArtist() != '' && resource.data.artist == myArtist());
     }
+    // Отзывы: видят все. Оставить может только клиент после подтверждённого визита —
+    // номер отзыва = номер его записи (секретный), один отзыв на одну запись.
+    // Изменить или удалить может только владелец салона.
+    match /reviews/{id} {
+      allow read: if true;
+      allow create: if exists(/databases/$(database)/documents/bookings/$(id))
+        && get(/databases/$(database)/documents/bookings/$(id)).data.status == 'confirmed'
+        && request.time > timestamp.date(
+             int(get(/databases/$(database)/documents/bookings/$(id)).data.date[0:4]),
+             int(get(/databases/$(database)/documents/bookings/$(id)).data.date[5:7]),
+             int(get(/databases/$(database)/documents/bookings/$(id)).data.date[8:10]))
+        && request.resource.data.keys().hasOnly(['artist','name','rating','text','created','edited'])
+        && request.resource.data.artist == get(/databases/$(database)/documents/bookings/$(id)).data.artist
+        && request.resource.data.name == get(/databases/$(database)/documents/bookings/$(id)).data.name
+        && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+        && request.resource.data.text is string && request.resource.data.text.size() <= 500
+        && request.resource.data.edited == false;
+      allow update: if isOwner()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating','text','edited','updated'])
+        && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+        && request.resource.data.text is string && request.resource.data.text.size() <= 500
+        && request.resource.data.edited == true;
+      allow delete: if isOwner();
+    }
     // Фото профиля мастера: видят все; меняет владелец или сам мастер (только своё)
     match /avatars/{artistId} {
       allow read: if true;

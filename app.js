@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, getDocFromServer,
+  getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, getDocFromServer,
   writeBatch, query, where, orderBy, limit, getDocs, getDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
@@ -108,7 +108,7 @@ let USER = null, authReady = false, ownerDenied = false;
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
-let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null, NEWB = [], AVATARS = {};
+let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null, NEWB = [], AVATARS = {}, REVIEWS = [];
 const NEW_WINDOW = 2 * 24 * 3600 * 1000;
 let inboxSeen = lsGet("nb-inbox-seen", 0);
 const OWNER_UID = firebaseConfig.ownerUid || "";
@@ -264,6 +264,9 @@ onSnapshot(query(collection(db, "busy"), where("date", ">=", addDays(todayKey(),
 }, () => {});
 
 // Photo gallery: customers only get photos that are not hidden.
+onSnapshot(collection(db, "reviews"), snap => {
+  REVIEWS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0)); render(true);
+}, () => { REVIEWS = []; });
 onSnapshot(collection(db, "avatars"), snap => {
   const m = {}; snap.docs.forEach(d => { const x = d.data(); if (x && x.img) m[d.id] = x.img; }); AVATARS = m; render(true);
 }, () => {});
@@ -446,7 +449,7 @@ function vHome() {
   </section>
   <section class="stack">
     <h2 class="h2">Наши мастера</h2>
-    <div class="list">${SET.artists.map(a => `<div class="row">${avatar(a.id, a.name, 44)}<div style="flex:1;min-width:0"><b>${esc(a.name)}</b><div class="tiny muted">${worksOf(a.id) ? worksOf(a.id) + " " + plural(worksOf(a.id), ["работа", "работы", "работ"]) + " в галерее" : "Мастер ногтевого сервиса"}</div></div>${worksOf(a.id) ? `<button class="linkbtn" data-act="gallery-master" data-v="${esc(a.id)}">Работы ›</button>` : ""}</div>`).join("")}</div>
+    <div class="list">${SET.artists.map(a => `<div class="row">${avatar(a.id, a.name, 44)}<div style="flex:1;min-width:0"><b>${esc(a.name)}</b>${revOf(a.id).length ? `<button class="linkbtn revlink" data-act="reviews" data-v="${esc(a.id)}">${revLine(a.id)} ›</button>` : ""}<div class="tiny muted">${worksOf(a.id) ? worksOf(a.id) + " " + plural(worksOf(a.id), ["работа", "работы", "работ"]) + " в галерее" : "Мастер ногтевого сервиса"}</div></div>${worksOf(a.id) ? `<button class="linkbtn" data-act="gallery-master" data-v="${esc(a.id)}">Работы ›</button>` : ""}</div>`).join("")}</div>
   </section>
   <a class="linkbtn" href="#owner" style="align-self:center;text-decoration:none">Вход для владельца салона</a>`;
 }
@@ -478,7 +481,7 @@ function barServices() {
 function vArtist() {
   const dur = selDur();
   const opts = [{ id: "any", name: "Любой свободный мастер", role: "Самый быстрый способ записаться" }]
-    .concat(SET.artists.map(a => ({ id: a.id, name: a.name, role: "Мастер ногтевого сервиса" })));
+    .concat(SET.artists.map(a => ({ id: a.id, name: a.name, role: revLine(a.id) || "Мастер ногтевого сервиса" })));
   return `${header("Шаг 2 из 4", "Выберите мастера", "services")}
   <div class="list">${opts.map(o => {
     let next = "Нет свободных окон на 3 недели"; let k = todayKey();
@@ -561,6 +564,9 @@ function bookingCard(b) {
         <b style="font-size:16px">${esc(svcs)}</b><span class="small muted">${esc(SET.name)} · ${esc(artistName(b.artist))}</span></div>
       ${statusPill(b)}</div>
     ${canCancel ? salonMsgButtons(b) : ""}
+    ${isDone(b) ? (REVIEWS.some(r => r.id === b.id)
+      ? `<div class="small muted">Ваш отзыв: ${starsHtml((REVIEWS.find(r => r.id === b.id) || {}).rating || 0)}</div>`
+      : `<button class="btn sm ghost" data-act="rev-new" data-v="${esc(b.id)}">★ Оставить отзыв</button>`) : ""}
     ${canCancel ? (S.armed === b.id
       ? `<div class="btns"><button class="btn sm solid-danger" data-act="cancel" data-v="${esc(b.id)}">Да, отменить</button><button class="btn sm ghost" data-act="disarm">Оставить запись</button></div>`
       : `<button class="btn danger" data-act="arm" data-v="${esc(b.id)}">Отменить запись</button>`) : ""}
@@ -580,6 +586,90 @@ function vBookings() {
   <div class="list">${list.length ? list.map(bookingCard).join("") : `<div class="empty">${S.bookTab === "upcoming" ? "Предстоящих записей пока нет." : "Здесь пока ничего нет."}</div>`}</div>
   <p class="tiny muted">Записи сохраняются на этом телефоне. Если вы записывались с другого телефона, они будут видны там.</p>
   <button class="btn ghost" data-act="cat" data-v="${esc(first)}">${ICON.plus}Новая запись</button>`;
+}
+/* ---------- reviews ---------- */
+const revOf = id => REVIEWS.filter(r => r.artist === id);
+const revAvg = l => l.length ? Math.round(l.reduce((n, r) => n + Number(r.rating || 0), 0) / l.length * 10) / 10 : 0;
+const starsHtml = (n, px) => `<span class="stars" aria-label="Оценка ${n} из 5" style="${px ? "font-size:" + px + "px" : ""}">${[1, 2, 3, 4, 5].map(i => `<i class="${i <= Math.round(n) ? "on" : ""}">★</i>`).join("")}</span>`;
+const revLine = id => { const l = revOf(id); return l.length ? `★ ${revAvg(l).toLocaleString("ru-RU")} · ${l.length} ${plural(l.length, ["отзыв", "отзыва", "отзывов"])}` : ""; };
+// public name: "Мария" or "Мария К." — never the full surname or phone
+const shortName = n => { const p = String(n || "Клиент").trim().split(/\s+/); return p[0] + (p[1] ? " " + p[1].charAt(0).toUpperCase() + "." : ""); };
+const revDate = r => { const d = new Date(r.created || Date.now()); return d.getDate() + " " + MONG[d.getMonth()] + " " + d.getFullYear(); };
+function reviewCard(r, ctl) {
+  return `<div class="card stack" style="gap:6px">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>${esc(shortName(r.name))}</b>${starsHtml(r.rating)}</div>
+    <div class="tiny muted">${esc(revDate(r))}${ctl ? " · мастер " + esc(artistName(r.artist)) : ""}${r.edited ? " · изменён салоном" : ""}</div>
+    ${r.text ? `<p class="small" style="margin:0;white-space:pre-wrap">${esc(r.text)}</p>` : ""}
+    ${ctl || ""}
+  </div>`;
+}
+function vReviews() {
+  const id = S.revMaster, l = revOf(id), name = artistName(id);
+  return `${header("", "Отзывы", "home")}
+  <div class="card row">${avatar(id, name, 56)}<div style="min-width:0"><b style="font-size:17px">Мастер ${esc(name)}</b>
+    <div class="small muted">${l.length ? starsHtml(revAvg(l), 15) + " " + revAvg(l).toLocaleString("ru-RU") + " · " + l.length + " " + plural(l.length, ["отзыв", "отзыва", "отзывов"]) : "Отзывов пока нет"}</div></div></div>
+  <div class="list">${l.map(r => reviewCard(r)).join("") || `<div class="empty">Отзывов пока нет. Оставить отзыв можно после визита — в «Мои записи».</div>`}</div>`;
+}
+const barReviews = () => `<div class="cta wrap"><button class="btn" style="flex:1" data-act="book-master" data-v="${esc(S.revMaster)}">Записаться к мастеру ${esc(artistName(S.revMaster))}</button></div>`;
+function vReviewForm() {
+  const b = MY[S.revBooking]; if (!b) return vBookings();
+  const R = S.revDraft;
+  return `${header("", "Ваш отзыв", "bookings")}
+  <div class="card row">${avatar(b.artist, artistName(b.artist), 48)}<div style="min-width:0"><b>Мастер ${esc(artistName(b.artist))}</b><div class="small muted">${esc(shortDate(b.date))} · ${esc((b.serviceNames || []).join(", "))}</div></div></div>
+  <div class="card stack">
+    <b>Как вам визит?</b>
+    <div class="starpick" role="group" aria-label="Оценка">${[1, 2, 3, 4, 5].map(i => `<button data-act="rev-star" data-v="${i}" aria-label="${i} из 5" aria-pressed="${i <= R.rating}">★</button>`).join("")}</div>
+    <label class="field" for="revText">Отзыв (необязательно)<textarea id="revText" maxlength="500" rows="4" placeholder="Что понравилось? Будем рады вашим словам">${esc(R.text)}</textarea></label>
+    ${S.tried && !R.rating ? `<div class="err">Поставьте оценку — нажмите на звёзды</div>` : ""}
+    <p class="tiny muted">Отзыв увидят другие клиенты. Будет показано только ваше имя: «${esc(shortName(b.name))}».</p>
+  </div>`;
+}
+const barReviewForm = () => `<div class="cta wrap"><button class="btn" style="flex:1" data-act="rev-send" ${S.saving ? "disabled" : ""}>${S.saving ? "Отправляем…" : "Отправить отзыв"}</button></div>`;
+async function sendReview() {
+  const b = MY[S.revBooking], R = S.revDraft;
+  S.tried = true;
+  if (!b || !R.rating) { render(true); return; }
+  S.saving = true; render(true);
+  try {
+    await setDoc(doc(db, "reviews", b.id), { artist: b.artist, name: b.name, rating: R.rating, text: (R.text || "").trim().slice(0, 500), created: Date.now(), edited: false });
+    toast("Спасибо за отзыв!"); S.saving = false; S.tried = false; S.revDraft = null; go("bookings"); return;
+  } catch (err) { toast(errText(err)); }
+  S.saving = false; render(true);
+}
+/* owner / master: reviews list inside the «Работы» tab */
+function vReviewsAdmin() {
+  const own = ROLE === "master", isOwn = ROLE === "owner";
+  let l = own ? revOf(MY_ARTIST) : REVIEWS;
+  if (!own && S.gMaster !== "all") l = l.filter(r => r.artist === S.gMaster);
+  const E = S.revEdit;
+  const card = r => {
+    if (!isOwn) return reviewCard(r);
+    if (E && E.id === r.id) return `<div class="card stack" style="gap:8px"><b>${esc(shortName(r.name))} · мастер ${esc(artistName(r.artist))}</b>
+      <div class="starpick" role="group" aria-label="Оценка">${[1, 2, 3, 4, 5].map(i => `<button data-act="rev-estar" data-v="${i}" aria-label="${i} из 5" aria-pressed="${i <= E.rating}">★</button>`).join("")}</div>
+      <label class="field" for="revEditText">Текст отзыва<textarea id="revEditText" maxlength="500" rows="4">${esc(E.text)}</textarea></label>
+      <p class="tiny muted">После изменения у отзыва будет пометка «изменён салоном».</p>
+      <div class="btns"><button class="btn sm ghost" data-act="rev-ecancel">Отмена</button><button class="btn sm" data-act="rev-esave">Сохранить</button></div></div>`;
+    const armed = S.armed === "r:" + r.id;
+    return reviewCard(r, `<div class="btns">${armed
+      ? `<button class="btn sm solid-danger" data-act="rev-del" data-v="${esc(r.id)}">Да, удалить</button><button class="btn sm ghost" data-act="disarm">Оставить</button>`
+      : `<button class="btn sm ghost" data-act="rev-edit" data-v="${esc(r.id)}">Изменить</button><button class="btn sm danger" data-act="rev-arm" data-v="${esc(r.id)}">Удалить</button>`}</div>`);
+  };
+  const avgTxt = l.length ? `${revAvg(l).toLocaleString("ru-RU")} ★ · ${l.length} ${plural(l.length, ["отзыв", "отзыва", "отзывов"])}` : "Отзывов пока нет";
+  return `<p class="small muted" style="margin-top:-6px">${avgTxt}</p>
+  ${!own && SET.artists.length > 1 ? chips("g-master", [["all", "Все мастера"]].concat(SET.artists.map(a => [a.id, a.name])), S.gMaster, "Мастер") : ""}
+  <div class="list">${l.map(card).join("") || `<div class="empty">Клиенты могут оставить отзыв после визита в разделе «Мои записи».</div>`}</div>
+  ${isOwn ? `<p class="tiny muted">Удалять и изменять отзывы может только владелец салона.</p>` : ""}`;
+}
+async function saveReviewEdit() {
+  const E = S.revEdit; if (!E) return;
+  if (!E.rating) { toast("Поставьте оценку"); return; }
+  try { await updateDoc(doc(db, "reviews", E.id), { rating: E.rating, text: (E.text || "").trim().slice(0, 500), edited: true, updated: Date.now() }); S.revEdit = null; toast("Отзыв изменён"); }
+  catch (err) { toast(errText(err)); }
+  render(true);
+}
+async function deleteReview(id) {
+  try { await deleteDoc(doc(db, "reviews", id)); toast("Отзыв удалён"); } catch (err) { toast(errText(err)); }
+  S.armed = null; render(true);
 }
 /* ---------- photo gallery (customers) ---------- */
 const worksOf = id => PUB_WORKS.filter(w => w.artist === id).length;
@@ -878,7 +968,9 @@ function vWorks() {
       ${armed ? `<button class="wdel" data-act="w-del" data-v="${esc(w.id)}">Удалить?</button>`
         : `<button class="wbtn" style="right:4px;color:var(--bad)" data-act="w-arm" data-v="${esc(w.id)}" aria-label="Удалить фото">${ICON.trash}</button>`}</div>`;
   };
-  return `<h1 class="h1" style="font-size:26px">${own ? "Мои работы" : "Работы мастеров"}</h1>
+  const seg = `<div class="seg" role="group" aria-label="Раздел"><button data-act="wtab" data-v="photos" aria-pressed="${S.wTab !== "reviews"}">Фото</button><button data-act="wtab" data-v="reviews" aria-pressed="${S.wTab === "reviews"}">Отзывы${(own ? revOf(MY_ARTIST) : REVIEWS).length ? " · " + (own ? revOf(MY_ARTIST) : REVIEWS).length : ""}</button></div>`;
+  if (S.wTab === "reviews") return `<h1 class="h1" style="font-size:26px">${own ? "Мои отзывы" : "Отзывы"}</h1>${seg}${vReviewsAdmin()}`;
+  return `<h1 class="h1" style="font-size:26px">${own ? "Мои работы" : "Работы мастеров"}</h1>${seg}
   <p class="small muted" style="margin-top:-10px">${ws.filter(w => !w.hidden).length} фото видят клиенты</p>
   ${form}
   ${!own && SET.artists.length > 1 ? chips("g-master", [["all", "Все мастера"]].concat(SET.artists.map(a => [a.id, a.name])), S.gMaster, "Мастер") : ""}
@@ -1044,6 +1136,8 @@ function render(keepScroll) {
       case "bookings": html = vBookings(); b = clientTabs(); break;
       case "gallery": html = vGallery(); b = barGallery(); break;
       case "photo": html = vPhoto(); b = barPhoto(); break;
+      case "reviews": html = vReviews(); b = barReviews(); break;
+      case "review": html = vReviewForm(); b = MY[S.revBooking] ? barReviewForm() : clientTabs(); break;
       default: html = vHome(); b = barHome() + clientTabs();
     }
   } else {
@@ -1098,6 +1192,17 @@ document.addEventListener("click", async e => {
     case "cat": S.cat = v; if (S.view !== "services") { S.sel = []; S.artist = "any"; S.date = null; S.time = null; S.tried = false; } go("services"); break;
     case "tab-cat": S.cat = v; render(true); break;
     case "w-pick": pickWorkPhoto(); break;
+    case "reviews": S.revMaster = v; go("reviews"); break;
+    case "rev-new": S.revBooking = v; S.revDraft = { rating: 0, text: "" }; S.tried = false; go("review"); break;
+    case "rev-star": if (S.revDraft) { S.revDraft.rating = +v; render(true); } break;
+    case "rev-send": sendReview(); break;
+    case "wtab": S.wTab = v; S.revEdit = null; S.armed = null; render(true); break;
+    case "rev-edit": { const r = REVIEWS.find(x => x.id === v); if (r && ROLE === "owner") { S.revEdit = { id: r.id, rating: r.rating, text: r.text || "" }; S.armed = null; render(true); } break; }
+    case "rev-estar": if (S.revEdit) { S.revEdit.rating = +v; render(true); } break;
+    case "rev-ecancel": S.revEdit = null; render(true); break;
+    case "rev-esave": saveReviewEdit(); break;
+    case "rev-arm": S.armed = "r:" + v; S.revEdit = null; render(true); break;
+    case "rev-del": deleteReview(v); break;
     case "av-pick": if (!S.avBusy && (ROLE === "owner" || v === MY_ARTIST)) pickImage(f => saveAvatar(v, f)); break;
     case "svc": S.sel = S.sel.includes(v) ? S.sel.filter(x => x !== v) : S.sel.concat(v); S.time = null; S.date = null; render(true); break;
     case "artist": S.artist = v; S.time = null; S.date = null; render(true); break;
@@ -1159,6 +1264,8 @@ document.addEventListener("input", e => {
   if (t.id === "fName") { S.form.name = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fNote") S.form.note = t.value;
+  else if (t.id === "revText" && S.revDraft) S.revDraft.text = t.value;
+  else if (t.id === "revEditText" && S.revEdit) S.revEdit.text = t.value;
   else if (t.id === "lEmail") S.login.email = t.value;
   else if (t.id === "lPw") S.login.pw = t.value;
   else if (t.id === "wTitle" && S.workDraft) S.workDraft.title = t.value;
