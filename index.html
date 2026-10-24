@@ -30,7 +30,21 @@
 <script type="module" src="app.js"></script>
 <script>
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
+    // Updates: check for a new version on start and whenever the app is brought back to the screen,
+    // then reload once so the installed phone app never stays on an old version.
+    var hadController = !!navigator.serviceWorker.controller, reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", function(){
+      if (!hadController || reloading) { hadController = true; return; }
+      var typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+      if (typing) return;   // don't interrupt someone filling in a form; the next start will pick it up
+      reloading = true; location.reload();
+    });
+    window.addEventListener("load", function(){
+      navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(function(reg){
+        reg.update().catch(function(){});
+        document.addEventListener("visibilitychange", function(){ if (document.visibilityState === "visible") reg.update().catch(function(){}); });
+      }).catch(function(){});
+    });
   }
 </script>
 </body>

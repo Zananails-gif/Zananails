@@ -1,6 +1,6 @@
 // Service worker: lets the app install on the home screen and open quickly.
 // Always tries the network first so updates show up straight away.
-const CACHE = "nailbook-v13";
+const CACHE = "nailbook-v14";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "manifest.json",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 
@@ -14,7 +14,9 @@ self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then(res => {
+    // "no-cache" = always ask the server if the file changed (skips Chrome's 10-minute file cache)
+    fetch(e.request.url, { cache: "no-cache", credentials: "same-origin" }).then(res => {
+      if (!res.ok) return res;
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
       return res;
