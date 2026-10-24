@@ -652,6 +652,12 @@ function vInbox() {
     <span style="width:10px;height:10px;border-radius:5px;flex-shrink:0;background:${b.status === "cancelled" ? "var(--bad)" : "var(--ok)"}"></span>
     <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:14px">${esc(b.name)}: ${b.status === "cancelled" ? "запись отменена" : "запись подтверждена"}</b><span class="tiny muted">${esc(shortDate(b.date))}, ${hm(b.start)} · ${esc(artistName(b.artist))}</span></span></button>`).join("")}</div>` : ""}`;
 }
+// Service length picker: 15-minute steps up to 8 hours, shown as hours and minutes.
+function durOptions(cur) {
+  const vals = []; for (let m = 15; m <= 480; m += 15) vals.push(m);
+  if (cur && !vals.includes(cur)) { vals.push(cur); vals.sort((a, b) => a - b); }
+  return vals.map(m => `<option value="${m}" ${m === cur ? "selected" : ""}>${durTxt(m)}</option>`).join("");
+}
 function vSettings() {
   if (!S.draft || !S.dirty) {
     S.draft = clone(SET); S.dirty = false;
@@ -713,9 +719,9 @@ function vSettings() {
     ${D.services.map((s, i) => `<div class="ed">
       <input class="inp" id="svn${i}" aria-label="Название услуги" data-d="svc:${i}:name" maxlength="60" value="${esc(s.name)}" placeholder="Название услуги">
       <div class="ed-row">
-        <label class="mini" for="svc${i}">Категория<select class="inp" id="svc${i}" data-d="svc:${i}:cat">${CATS.map(c => `<option ${c.id === s.cat ? "selected" : ""}>${esc(c.id)}</option>`).join("")}</select></label>
+        <label class="mini span-all" for="svc${i}">Категория<select class="inp" id="svc${i}" data-d="svc:${i}:cat">${CATS.map(c => `<option ${c.id === s.cat ? "selected" : ""}>${esc(c.id)}</option>`).join("")}</select></label>
         <label class="mini" for="svp${i}">Цена, ₽<input class="inp" id="svp${i}" data-d="svc:${i}:price" inputmode="numeric" value="${esc(s.price)}"></label>
-        <label class="mini" for="svd${i}">Минут<input class="inp" id="svd${i}" data-d="svc:${i}:dur" inputmode="numeric" value="${esc(s.dur)}"></label>
+        <label class="mini" for="svd${i}">Время<select class="inp" id="svd${i}" data-d="svc:${i}:dur">${durOptions(s.dur)}</select></label>
         <button class="icon-btn" data-act="del-svc" data-v="${i}" aria-label="Удалить услугу ${esc(s.name)}">${ICON.trash}</button>
       </div></div>`).join("")}
     <button class="btn sm ghost" data-act="add-svc">${ICON.plus}Добавить услугу</button>
