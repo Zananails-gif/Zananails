@@ -1,6 +1,6 @@
 // Service worker: lets the app install on the home screen and open quickly.
 // Always tries the network first so updates show up straight away.
-const CACHE = "nailbook-v24";
+const CACHE = "nailbook-v25";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "manifest.json",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 

@@ -547,7 +547,8 @@ function clientList() {
     if ((b.created || 0) >= (c._t || 0)) { c.name = b.name || c.name; if (b.phone) c.phone = b.phone; c._t = b.created || 0; }
     c.list.push(b);
     if (b.status === "cancelled") c.cancels++;
-    else if (b.date < now || (b.date === now && b.start + b.dur <= nowMin())) { c.visits++; c.spent += Number(b.total || 0); if (b.date > c.last) c.last = b.date; c.artists[b.artist] = (c.artists[b.artist] || 0) + 1; }
+    else if (b.date < now || (b.date === now && b.start + b.dur <= nowMin())) { c.visits++; c.spent += Number(b.total || 0);
+      if (b.date > c.last) { c.last = b.date; c.lastSvc = (b.serviceNames || []).join(", "); c.lastArtist = b.artist; } c.artists[b.artist] = (c.artists[b.artist] || 0) + 1; }
     else if (!c.next || b.date < c.next) c.next = b.date;
   });
   Object.keys(CLIENT_DOCS).forEach(k => { const d = CLIENT_DOCS[k], c = add(k, d.name, d.phone); if (d.name) c.name = d.name; if (d.phone) c.phone = d.phone; c.note = d.note || ""; c.saved = true; });
@@ -573,8 +574,9 @@ function clientRows(list) {
   if (!list.length) return `<div class="empty">Никого не нашли.</div>`;
   return `<div class="card" style="padding:0">${list.slice(0, 200).map((c, i) => `<button class="cl-row" data-act="cl-open" data-v="${esc(c.key)}" style="${i ? "" : "border-top:0"}">
       <span class="biglogo" style="width:40px;height:40px;border-radius:20px;font-size:16px">${esc(c.name.charAt(0).toUpperCase())}</span>
-      <span class="stack" style="gap:1px;flex:1;min-width:0;text-align:left"><b>${esc(c.name)}</b><span class="tiny muted">${esc(c.phone || "без телефона")}</span></span>
-      <span class="stack" style="gap:1px;align-items:flex-end"><b class="small">${visitsTxt(c.visits)}</b><span class="tiny muted">${c.next ? "запись " + esc(shortDate(c.next)) : c.last ? "посл. " + esc(shortDate(c.last)) : ""}</span></span></button>`).join("")}</div>`;
+      <span class="stack" style="gap:1px;flex:1;min-width:0;text-align:left"><b>${esc(c.name)}</b><span class="tiny muted">${esc(c.phone || "без телефона")}</span>
+        ${c.last ? `<span class="tiny muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">посл.: ${esc(shortDate(c.last))} · ${esc(c.lastSvc || "")}</span>` : ""}</span>
+      <span class="stack" style="gap:1px;align-items:flex-end"><b class="small">${visitsTxt(c.visits)}</b><span class="tiny muted">${rub(c.spent)}</span>${c.next ? `<span class="tiny" style="color:var(--accent)">запись ${esc(shortDate(c.next))}</span>` : ""}</span></button>`).join("")}</div>`;
 }
 function vClient() {
   if (!CL_BOOK) loadClientBookings();
@@ -585,6 +587,7 @@ function vClient() {
   const msgB = { name: c.name, phone: c.phone };
   return `${header("", c.name, "clients")}
   <div class="stat3"><div class="card"><span class="tiny muted">Визитов</span><b>${c.visits}</b></div><div class="card"><span class="tiny muted">Потрачено</span><b>${rub(c.spent)}</b></div><div class="card"><span class="tiny muted">Отмены</span><b>${c.cancels}</b></div></div>
+  ${c.last ? `<div class="card stack" style="gap:2px"><span class="tiny muted" style="font-weight:700">ПОСЛЕДНИЙ ВИЗИТ</span><b>${esc(shortDate(c.last))} · ${esc(c.lastSvc || "")}</b><span class="small muted">мастер ${esc(artistName(c.lastArtist))}${c.next ? " · следующая запись " + esc(shortDate(c.next)) : ""}</span></div>` : ""}
   <div class="card stack">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:16px;user-select:all">${esc(c.phone || "Телефон не указан")}</b>${fav ? `<span class="tiny muted">обычно к мастеру ${esc(artistName(fav))}</span>` : ""}</div>
     ${c.phone ? `<div class="msgbtns"><a class="btn sm ghost" href="tel:${esc(c.phone.replace(/[^\d+]/g, ""))}">${ICON.phone}Звонок</a>
