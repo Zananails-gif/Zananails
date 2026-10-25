@@ -39,7 +39,7 @@ service cloud.firestore {
       // Клиент открывает свою запись только по её секретному номеру.
       // Список: владелец — все записи, мастер — только свои.
       allow get: if true;
-      allow list: if isOwner() || (myArtist() != '' && resource.data.artist == myArtist());
+      allow list: if isOwner() || (myArtist() != '' && (resource.data.artist == myArtist() || get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true));
 
       allow create: if
         request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated','chair'])
@@ -67,9 +67,14 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
         )
         || (
-          myArtist() != '' && resource.data.artist == myArtist()
-          && request.resource.data.status in ['confirmed', 'cancelled']
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+          myArtist() != ''
+          && (resource.data.artist == myArtist() || (get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/settings/salon).data.get('shareEdit', false) == true))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated','date','start','dur','artist','anyArtist'])
+          && request.resource.data.status in ['pending', 'confirmed', 'cancelled']
+          && (request.resource.data.artist == resource.data.artist || (get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/settings/salon).data.get('shareEdit', false) == true))
+          && request.resource.data.date is string && request.resource.data.date.size() == 10
+          && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
+          && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
         );
       allow delete: if isOwner();
     }
@@ -86,7 +91,13 @@ service cloud.firestore {
         && request.resource.data.dur == getAfter(/databases/$(database)/documents/bookings/$(id)).data.dur
         && request.resource.data.artist == getAfter(/databases/$(database)/documents/bookings/$(id)).data.artist
       );
-      allow update: if isOwner();
+      allow update: if isOwner() || (myArtist() != ''
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date','start','dur','artist'])
+        && request.resource.data.date == getAfter(/databases/$(database)/documents/bookings/$(id)).data.date
+        && request.resource.data.start == getAfter(/databases/$(database)/documents/bookings/$(id)).data.start
+        && request.resource.data.get('dur', 0) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.dur
+        && request.resource.data.artist == getAfter(/databases/$(database)/documents/bookings/$(id)).data.artist
+        && (resource.data.artist == myArtist() || (get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/settings/salon).data.get('shareEdit', false) == true)));
       allow delete: if isOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
     }
 
@@ -195,7 +206,7 @@ service cloud.firestore {
         // Клиент открывает свою запись только по её секретному номеру.
         // Список: владелец — все записи, мастер — только свои.
         allow get: if true;
-        allow list: if sOwner() || (sArtist() != '' && resource.data.artist == sArtist());
+        allow list: if sOwner() || (sArtist() != '' && (resource.data.artist == sArtist() || get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareView', false) == true));
 
         allow create: if sActive()
           && request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated','chair'])
@@ -223,9 +234,14 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
           )
           || (
-            sArtist() != '' && resource.data.artist == sArtist()
-            && request.resource.data.status in ['confirmed', 'cancelled']
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+            sArtist() != ''
+            && (resource.data.artist == sArtist() || (get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareEdit', false) == true))
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated','date','start','dur','artist','anyArtist'])
+            && request.resource.data.status in ['pending', 'confirmed', 'cancelled']
+            && (request.resource.data.artist == resource.data.artist || (get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareEdit', false) == true))
+            && request.resource.data.date is string && request.resource.data.date.size() == 10
+            && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
+            && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
           );
         allow delete: if sOwner();
       }
@@ -242,7 +258,13 @@ service cloud.firestore {
           && request.resource.data.dur == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.dur
           && request.resource.data.artist == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.artist
         );
-        allow update: if sOwner();
+        allow update: if sOwner() || (sArtist() != ''
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date','start','dur','artist'])
+          && request.resource.data.date == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.date
+          && request.resource.data.start == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.start
+          && request.resource.data.get('dur', 0) == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.dur
+          && request.resource.data.artist == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.artist
+          && (resource.data.artist == sArtist() || (get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareEdit', false) == true)));
         allow delete: if sOwner() || getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status == 'cancelled';
       }
 

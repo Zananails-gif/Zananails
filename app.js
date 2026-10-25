@@ -150,6 +150,10 @@ function sha256(m) {
   }
   return H.map(x => (x >>> 0).toString(16).padStart(8, "0")).join("");
 }
+// owner's switches: masters see every master's bookings / may change them
+const shareView = () => !!(SET && SET.shareView);
+const shareEdit = () => !!(SET && SET.shareView && SET.shareEdit);
+const canEditBooking = b => ROLE === "owner" || (ROLE === "master" && !!b && (b.artist === MY_ARTIST || shareEdit()));
 const isAdmin = () => !!USER && ((!!OWNER_UID && USER.uid === OWNER_UID) || hiddenAdmin);
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
@@ -196,15 +200,15 @@ function chairFree(date, start, dur, ignoreId) {
   const n = BUSY.filter(b => b.chair && b.id !== ignoreId && b.date === date && start < b.start + b.dur && b.start < start + dur).length;
   return n < ((SET && SET.pediChairs) || 1);
 }
-function slotsFor(date, artist, dur, needChair = selNeedsChair(), staff = false) {
+function slotsFor(date, artist, dur, needChair = selNeedsChair(), staff = false, ignoreId) {
   if (!SET || isClosed(date) || !dur) return [];
   const out = [];
   // clients can book from 30 min ahead; staff can also add a client who is already in the chair today
   const minStart = staff ? (date < todayKey() ? 1e9 : 0) : date === todayKey() ? nowMin() + 30 : 0;
   for (let t = SET.open; t + dur <= SET.close; t += STEP) {
     if (t < minStart) continue;
-    if (needChair && !chairFree(date, t, dur)) continue;
-    const ok = artist === "any" ? freeArtists(date, t, dur).length > 0 : artistFree(artist, date, t, dur);
+    if (needChair && !chairFree(date, t, dur, ignoreId)) continue;
+    const ok = artist === "any" ? freeArtists(date, t, dur).length > 0 : artistFree(artist, date, t, dur, ignoreId);
     if (ok) out.push(t);
   }
   return out;
@@ -252,13 +256,45 @@ function tgLink(user, text) {
 function bookingLine(b) {
   return longDate(b.date).toLowerCase() + " в " + hm(b.start) + ", " + ((b.serviceNames || []).join(", ") || "услуга") + ", мастер " + artistName(b.artist);
 }
-function msgToSalon(b) {
-  return "Здравствуйте! Я записался(-ась) онлайн: " + bookingLine(b) + ". Имя: " + (b.name || "") + ", телефон: " + (b.phone || "") + ".";
+// Message texts the owner can edit (Настройки → «Тексты сообщений»); {words} are filled in for each booking.
+const TPL_DEFAULT = {
+  ok: "Здравствуйте, {имя}! Ваша запись в «{салон}» подтверждена: {дата} в {время}, {услуги}, мастер {мастер}. Адрес: {адрес}. Ждём вас!",
+  cancel: "Здравствуйте, {имя}! К сожалению, ваша запись в «{салон}» на {дата} в {время} отменена. Выберите другое время: {ссылка}",
+  salon: "Здравствуйте! Я записался(-ась) онлайн: {дата} в {время}, {услуги}, мастер {мастер}. Имя: {имя}, телефон: {телефон}."
+};
+const TPL_KEYS = ["{имя}", "{дата}", "{время}", "{услуги}", "{мастер}", "{салон}", "{адрес}", "{ссылка}", "{телефон}"];
+const tplText = k => { const t = SET && SET.msgTpl && SET.msgTpl[k]; return t && t.trim() ? t : TPL_DEFAULT[k]; };
+function fillTpl(t, b) {
+  const v = { "{имя}": b.name || "", "{дата}": longDate(b.date).toLowerCase(), "{время}": hm(b.start), "{услуги}": (b.serviceNames || []).join(", ") || "услуга",
+    "{мастер}": artistName(b.artist), "{салон}": (SET && SET.name) || "салон", "{адрес}": (SET && SET.area) || "", "{ссылка}": appLink(), "{телефон}": b.phone || "" };
+  return TPL_KEYS.reduce((x, k) => x.split(k).join(v[k]), t).replace(/ Адрес: \.| Адрес: (?=\s|$)/g, "");
 }
-function msgToClient(b) {
-  const salon = (SET && SET.name) || "салон";
-  if (b.status === "cancelled") return "Здравствуйте, " + (b.name || "") + "! К сожалению, ваша запись в «" + salon + "» на " + longDate(b.date).toLowerCase() + " в " + hm(b.start) + " отменена. Выберите другое время: " + appLink();
-  return "Здравствуйте, " + (b.name || "") + "! Ваша запись в «" + salon + "» подтверждена: " + bookingLine(b) + "." + (SET && SET.area ? " Адрес: " + SET.area + "." : "") + " Ждём вас!";
+const msgToSalon = b => fillTpl(tplText("salon"), b);
+const msgToClient = b => fillTpl(tplText(b.status === "cancelled" ? "cancel" : "ok"), b);
+function vTpl() {
+  const k = S.tplTab || "ok", d = S.tplDraft || (S.tplDraft = { ok: tplText("ok"), cancel: tplText("cancel"), salon: tplText("salon") });
+  const tabs = [["ok", "Подтверждение"], ["cancel", "Отмена"], ["salon", "Клиент → салон"]].map(([id, l]) => `<button data-act="tpl-tab" data-v="${id}" aria-pressed="${k === id}">${l}</button>`).join("");
+  const sample = { name: "Мария", date: addDays(todayKey(), 2), start: 780, serviceNames: [(SET.services[0] || {}).name || "Маникюр"], artist: (SET.artists[0] || {}).id, phone: "+7 900 555-66-77", status: k === "cancel" ? "cancelled" : "confirmed" };
+  const title = { ok: "Запись подтверждена", cancel: "Запись отменена", salon: "Клиент пишет салону" }[k];
+  return `${header("", "Тексты сообщений", "settings")}
+  <p class="small muted" style="margin-top:-8px">Эти тексты открываются в WhatsApp, Telegram или SMS по кнопкам «Сообщить клиенту». Перед отправкой текст можно поправить.</p>
+  <div class="seg" role="group" aria-label="Какое сообщение">${tabs}</div>
+  <div class="card stack"><b>${title}</b>
+    <textarea id="tplText" rows="6" maxlength="600" aria-label="Текст сообщения">${esc(d[k])}</textarea>
+    <span class="tiny muted" style="font-weight:600">Нажмите, чтобы вставить:</span>
+    <div class="chips chips-wrap">${TPL_KEYS.filter(x => k === "salon" || x !== "{телефон}").map(x => `<button class="chip" data-act="tpl-ins" data-v="${esc(x)}">${esc(x)}</button>`).join("")}</div>
+    <button class="linkbtn" style="align-self:flex-start;padding-left:0" data-act="tpl-reset">Вернуть текст по умолчанию</button></div>
+  <div class="stack" style="gap:6px"><span class="tiny muted" style="font-weight:700">КАК УВИДИТ ${k === "salon" ? "САЛОН" : "КЛИЕНТ"}</span>
+    <div class="bubble" id="tplPreview">${esc(fillTpl(d[k], sample))}</div></div>
+  <button class="btn" data-act="tpl-save" ${S.saving ? "disabled" : ""}>Сохранить</button>`;
+}
+async function saveTpl() {
+  const d = S.tplDraft; if (!d) return;
+  const out = {}; ["ok", "cancel", "salon"].forEach(k => { out[k] = (d[k] || "").trim() === TPL_DEFAULT[k] ? "" : (d[k] || "").trim().slice(0, 600); });
+  S.saving = true; render(true);
+  try { await updateDoc(settingsRef, { msgTpl: out }); S.draft = null; S.dirty = false; toast("Тексты сохранены"); S.tplDraft = null; S.saving = false; go("settings"); return; }
+  catch (err) { toast(errText(err)); }
+  S.saving = false; render(true);
 }
 function msgButtons(label, wa, tg, sms) {
   if (!wa && !tg && !sms) return "";
@@ -307,7 +343,9 @@ onSnapshot(settingsRef, { includeMetadataChanges: true }, snap => {
   // A "not found" answer from the offline cache (weak connection) is not trusted:
   // keep what we have and wait for the server.
   if (!snap.exists() && snap.metadata.fromCache) return;
+  const wasShared = shareView();
   SET = snap.exists() ? normalize(snap.data()) : null;
+  if (ROLE === "master" && wasShared !== shareView()) watchJday();
   setLoaded = true; setError = false;
   maybeCreateDefaults();
   renderSoon(true);
@@ -433,6 +471,7 @@ function startMasterWatch() {
     const before = new Set(NEWB.map(b => b.id));
     MASTER_ALL = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     deriveMaster();
+    if (shareView() && !unsubJday) watchJday();
     notifyNew(before);
     renderSoon(true);
   }, () => { noStaff = true; ROLE = null; renderSoon(true); }));
@@ -443,18 +482,19 @@ function deriveMaster() {
   PENDING = MASTER_ALL.filter(b => b.status === "pending" && b.date >= yday);
   NEWB = MASTER_ALL.filter(b => (b.created || 0) >= Date.now() - NEW_WINDOW);
   RECENT = MASTER_ALL.filter(b => b.status !== "pending").sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 15);
-  JDAY = MASTER_ALL.filter(b => b.date === S.jDate);
+  if (!shareView()) JDAY = MASTER_ALL.filter(b => b.date === S.jDate);
 }
-
+let jdayShared = false;
 function watchJday() {
-  if (ROLE === "master") { deriveMaster(); return; }
+  if (ROLE === "master" && !shareView()) { if (unsubJday) { unsubJday(); unsubJday = null; } jdayShared = false; deriveMaster(); return; }
   if (unsubJday) { unsubJday(); unsubJday = null; }
-  if (ROLE !== "owner") return;
+  if (ROLE !== "owner" && ROLE !== "master") return;
+  jdayShared = ROLE === "master";
   JDAY = [];
   unsubJday = onSnapshot(query(SC("bookings"), where("date", "==", S.jDate)), snap => {
     JDAY = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     renderSoon(true);
-  }, () => { ownerDenied = true; renderSoon(true); });
+  }, () => { if (ROLE === "master") { JDAY = MASTER_ALL.filter(b => b.date === S.jDate); renderSoon(true); return; } ownerDenied = true; renderSoon(true); });
 }
 
 async function maybeCreateDefaults() {
@@ -1148,7 +1188,7 @@ function vJournal() {
   const k = S.jDate, H = 56, OPEN = SET.open, CLOSE = SET.close;
   const day = JDAY.filter(b => b.status !== "cancelled");
   const revenue = day.reduce((n, b) => n + Number(b.total || 0), 0);
-  const ARTS = ROLE === "master" ? SET.artists.filter(x => x.id === MY_ARTIST) : SET.artists;
+  const ARTS = ROLE === "master" && !shareView() ? SET.artists.filter(x => x.id === MY_ARTIST) : SET.artists;
   const cols = Math.max(1, ARTS.length);
   const colW = `((100% - 44px) / ${cols})`;
   let hours = "";
@@ -1245,6 +1285,44 @@ function jSlots(ARTS, OPEN, CLOSE, H, colW, k) {
   });
   return out;
 }
+/* ---------- reschedule a booking (new date / time) ---------- */
+function vResched() {
+  const R = S.rs, b = R && findBooking(R.id);
+  if (!b) return vJournal();
+  const chair = !!b.chair || (b.services || []).some(id => (svcById(id) || {}).cat === PEDI_CAT);
+  const dur = R.dur || b.dur;
+  const slots = slotsFor(R.date, b.artist, dur, chair, true, b.id);
+  return `${header("", "Изменить запись", "journal")}
+  <div class="card stack" style="gap:4px"><b>${esc(b.name)}</b><span class="small muted">Сейчас: ${esc(shortDate(b.date))} в ${hm(b.start)}–${hm(b.start + b.dur)} · ${esc((b.serviceNames || []).join(", "))} · мастер ${esc(artistName(b.artist))}</span></div>
+  <div class="card stack"><b>Сколько займёт визит</b>
+    <label class="field" for="rsDur">Длительность<select id="rsDur">${durOptions(dur)}</select></label>
+    <span class="tiny muted" style="margin-top:-4px">Мастер знает клиента лучше: можно сделать визит короче или длиннее.</span></div>
+  <div class="card stack"><b>Дата и время</b>
+    <label class="field" for="rsDate">Дата<input id="rsDate" type="date" value="${esc(R.date)}" min="${todayKey()}"></label>
+    ${isClosed(R.date) ? `<div class="small muted">Выходной день.</div>`
+      : slots.length ? `<div class="slots">${slots.map(t => `<button class="slot" data-act="rs-time" data-v="${t}" aria-pressed="${R.time === t}">${hm(t)}</button>`).join("")}</div>`
+      : `<div class="small muted">На этот день нет свободного времени у мастера${chair ? " (или занято педикюрное кресло)" : ""}.</div>`}
+  </div>
+  <p class="tiny muted">Клиент получит уведомление, если включил напоминания. Можно также написать ему в WhatsApp, Telegram или SMS — кнопки появятся после переноса.</p>`;
+}
+const barResched = () => { const R = S.rs, ok = R && R.time != null && !(R.date === R.oldDate && R.time === R.oldTime && R.dur === R.oldDur);
+  return `<div class="cta wrap"><button class="btn" style="flex:1" data-act="rs-save" ${!ok || S.saving ? "disabled" : ""}>${S.saving ? "Сохраняем…" : ok ? "Сохранить: " + esc(shortDate(R.date)) + ", " + hm(R.time) + "–" + hm(R.time + R.dur) : "Выберите время"}</button></div>`; };
+async function saveResched() {
+  const R = S.rs, b = findBooking(R.id); if (!b || R.time == null) return;
+  const chair = !!b.chair || (b.services || []).some(id => (svcById(id) || {}).cat === PEDI_CAT);
+  if (!artistFree(b.artist, R.date, R.time, R.dur, b.id) || (chair && !chairFree(R.date, R.time, R.dur, b.id))) { toast("Это время уже занято. Выберите другое."); R.time = null; render(true); return; }
+  S.saving = true; render(true);
+  try {
+    const batch = writeBatch(db);
+    batch.update(SD("bookings", b.id), { date: R.date, start: R.time, dur: R.dur, updated: Date.now() });
+    batch.update(SD("busy", b.id), { date: R.date, start: R.time, dur: R.dur });
+    await batch.commit();
+    pushEvent(b.id, "move", "staff");
+    toast("Запись изменена: " + shortDate(R.date) + ", " + hm(R.time) + "–" + hm(R.time + R.dur));
+    S.saving = false; S.rs = null; S.jDate = R.date; watchJday(); S.view = "journal"; S.sheet = b.id; render(false); return;
+  } catch (err) { toast(errText(err)); }
+  S.saving = false; render(true);
+}
 function vInbox() {
   const pending = PENDING.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
   const recent = RECENT.filter(b => b.status !== "pending").slice(0, 10);
@@ -1302,6 +1380,7 @@ function vSettings() {
   return `<h1 class="h1" style="font-size:26px">Настройки салона</h1>
   ${isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="salons"><span><b>Мои салоны и оплаты</b><br><span class="tiny muted">${SALONS.length + 1} ${plural(SALONS.length + 1, ["салон", "салона", "салонов"])}${SALONS.filter(m => m.payClaim).length ? " · проверить оплат: " + SALONS.filter(m => m.payClaim).length : ""}</span></span><b>›</b></button>` : ""}
   <button class="card row sub-banner neutral" data-act="go" data-v="notif"><span><b>Уведомления</b><br><span class="tiny muted">${lsGet(lsk("nb-push-on"), false) ? "Включены на этом телефоне" : "Новые записи со звуком"}</span></span><b>›</b></button>
+  <button class="card row sub-banner neutral" data-act="go" data-v="tpl"><span><b>Тексты сообщений</b><br><span class="tiny muted">Подтверждение, отмена — для WhatsApp, Telegram и SMS</span></span><b>›</b></button>
   ${SID && !isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="sub"><span><b>Подписка</b><br><span class="tiny muted">${esc(subPill(META)[0])}</span></span><b>›</b></button>` : ""}
   <p class="small muted">Изменения увидят все клиенты после нажатия «Сохранить».</p>
   <div class="card stack">
@@ -1345,6 +1424,12 @@ function vSettings() {
   </div>
   <div class="card stack">
     <h2 class="h2">Мастера</h2>
+    <div class="stack" style="gap:0;border:1px solid var(--line);border-radius:14px;overflow:hidden">
+      <div style="padding:12px 14px 2px"><b>Доступ мастеров к записям</b></div>
+      <button class="sw-row" role="switch" aria-checked="${!!D.shareView}" data-act="d-toggle" data-v="shareView"><span class="stack" style="gap:2px;text-align:left"><b>Видят записи всех мастеров</b><span class="tiny muted">Журнал со всеми колонками, имена и время клиентов</span></span><span class="sw"><i></i></span></button>
+      <button class="sw-row" role="switch" aria-checked="${!!(D.shareView && D.shareEdit)}" data-act="d-toggle" data-v="shareEdit" ${D.shareView ? "" : 'disabled style="opacity:.45"'}><span class="stack" style="gap:2px;text-align:left"><b>Могут изменять чужие записи</b><span class="tiny muted">Подтвердить, перенести, передать, отменить</span></span><span class="sw"><i></i></span></button>
+    </div>
+    <p class="tiny muted">Свои записи мастер может переносить всегда. Отчёт, выручка, настройки и подписка — только у владельца.</p>
     <p class="small muted">Чтобы мастер мог входить и видеть свои записи, впишите его email. Мастер открывает ссылку кабинета, нажимает «Я мастер или новый владелец — регистрация» и сам придумывает пароль.</p>
     ${D.artists.map((a, i) => `<div class="ed">
       <div style="display:flex;gap:8px;align-items:center">
@@ -1508,12 +1593,13 @@ function saveBar() {
 
 /* ================= booking sheet (owner) ================= */
 function findBooking(id) {
-  return JDAY.find(b => b.id === id) || PENDING.find(b => b.id === id) || RECENT.find(b => b.id === id);
+  return JDAY.find(b => b.id === id) || PENDING.find(b => b.id === id) || RECENT.find(b => b.id === id) || MASTER_ALL.find(b => b.id === id);
 }
 function sheet() {
   const b = findBooking(S.sheet);
   if (!b) return "";
-  const others = ROLE === "owner" ? SET.artists.filter(a => a.id !== b.artist && artistFree(a.id, b.date, b.start, b.dur, b.id)) : [];
+  const edit = canEditBooking(b);
+  const others = (ROLE === "owner" || (edit && shareEdit())) ? SET.artists.filter(a => a.id !== b.artist && artistFree(a.id, b.date, b.start, b.dur, b.id)) : [];
   return `<div class="scrim"><div class="sheet wrap" role="dialog" aria-modal="true" aria-label="Детали записи">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
       <div><span class="when">${esc(shortDate(b.date))} · ${hm(b.start)}–${hm(b.start + b.dur)}</span><h2 class="h1" style="font-size:22px;margin-top:4px">${esc(b.name)}</h2>
@@ -1529,8 +1615,10 @@ function sheet() {
     </div>
     ${b.status !== "cancelled" && others.length ? `<label class="field" for="moveArtist">Передать другому мастеру
       <select id="moveArtist" data-move="${esc(b.id)}"><option value="">Оставить: ${esc(artistName(b.artist))}</option>${others.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join("")}</select></label>` : ""}
-    ${b.status === "pending" ? `<button class="btn" data-act="accept" data-v="${esc(b.id)}">Подтвердить запись</button>` : clientMsgButtons(b)}
-    ${b.status !== "cancelled" ? (S.armed === b.id
+    ${!edit ? `<p class="small muted">Только просмотр — изменить запись может мастер ${esc(artistName(b.artist))} или владелец.</p>` : ""}
+    ${edit && b.status !== "cancelled" ? `<button class="btn ghost" data-act="rs-open" data-v="${esc(b.id)}">${ICON.cal || ""}Изменить время или длительность</button>` : ""}
+    ${!edit ? "" : b.status === "pending" ? `<button class="btn" data-act="accept" data-v="${esc(b.id)}">Подтвердить запись</button>` : clientMsgButtons(b)}
+    ${edit && b.status !== "cancelled" ? (S.armed === b.id
       ? `<div class="btns"><button class="btn sm solid-danger" data-act="cancel" data-v="${esc(b.id)}">Да, отменить</button><button class="btn sm ghost" data-act="disarm">Не отменять</button></div>`
       : `<button class="btn danger" data-act="arm" data-v="${esc(b.id)}">Отменить запись</button>`) : ""}
     <button class="btn ghost" data-act="close">Закрыть</button>
@@ -1552,7 +1640,7 @@ document.addEventListener("focusout", () => { if (deferred) { deferred = false; 
 
 function refreshChrome() {
   if (SET) topBar();
-  if (S.mode === "owner" && USER && ROLE && !ownerDenied && SET) bar.innerHTML = S.view === "manual" && S.mb ? barManual() : (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
+  if (S.mode === "owner" && USER && ROLE && !ownerDenied && SET) bar.innerHTML = S.view === "resched" && S.rs ? barResched() : S.view === "manual" && S.mb ? barManual() : (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
 }
 
 function render(keepScroll) {
@@ -1593,6 +1681,8 @@ function render(keepScroll) {
         case "billing": html = isAdmin() ? vBilling() : vJournal(); break;
         case "sub": html = ROLE === "owner" ? vSub() : vJournal(); break;
         case "notif": html = vNotif(); break;
+        case "tpl": html = ROLE === "owner" ? vTpl() : vJournal(); break;
+        case "resched": html = S.rs ? vResched() : vJournal(); break;
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
         case "manual": html = S.mb ? vManual() : vJournal(); break;
@@ -1601,7 +1691,7 @@ function render(keepScroll) {
         case "settings": html = ROLE === "master" ? vMasterAccount() : vSettings(); break;
         default: html = vJournal();
       }
-      b = S.view === "manual" && S.mb ? barManual() : (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
+      b = S.view === "resched" && S.rs ? barResched() : S.view === "manual" && S.mb ? barManual() : (S.view === "settings" && ROLE === "owner" ? saveBar() : "") + ownerTabs();
     }
   }
   const y = window.scrollY;
@@ -1610,7 +1700,7 @@ function render(keepScroll) {
   main.style.paddingBottom = (bar.offsetHeight + 24) + "px";
   window.scrollTo(0, keepScroll ? y : 0);
 }
-function go(view) { S.view = view; S.armed = null; S.sheet = null; if (view !== "bookings") S.lastBooked = false; if (view === "report") loadReport(); render(false); }
+function go(view) { if (view !== "tpl") S.tplDraft = null; S.view = view; S.armed = null; S.sheet = null; if (view !== "bookings") S.lastBooked = false; if (view === "report") loadReport(); render(false); }
 
 window.addEventListener("hashchange", () => {
   const owner = location.hash === "#owner";
@@ -1663,6 +1753,16 @@ document.addEventListener("click", async e => {
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
     case "close": S.sheet = null; S.armed = null; render(true); break;
+    case "d-toggle": if (S.draft) { S.draft[v] = !S.draft[v]; if (v === "shareView" && !S.draft.shareView) S.draft.shareEdit = false; S.dirty = true; S.draftErr = ""; render(true); } break;
+    case "tpl-tab": { const e = document.getElementById("tplText"); if (e && S.tplDraft) S.tplDraft[S.tplTab || "ok"] = e.value; S.tplTab = v; render(true); break; }
+    case "tpl-ins": { const e = document.getElementById("tplText"); if (!e || !S.tplDraft) break; const a = e.selectionStart ?? e.value.length, z = e.selectionEnd ?? a;
+      e.value = e.value.slice(0, a) + v + e.value.slice(z); S.tplDraft[S.tplTab || "ok"] = e.value; render(true);
+      const e2 = document.getElementById("tplText"); if (e2) { e2.focus(); e2.setSelectionRange(a + v.length, a + v.length); } break; }
+    case "tpl-reset": if (S.tplDraft) { S.tplDraft[S.tplTab || "ok"] = TPL_DEFAULT[S.tplTab || "ok"]; render(true); } break;
+    case "tpl-save": { const e = document.getElementById("tplText"); if (e && S.tplDraft) S.tplDraft[S.tplTab || "ok"] = e.value; saveTpl(); break; }
+    case "rs-open": { const b = findBooking(v); if (!b || !canEditBooking(b)) break; S.rs = { id: b.id, date: b.date < todayKey() ? todayKey() : b.date, time: b.date < todayKey() ? null : b.start, dur: b.dur, oldDate: b.date, oldTime: b.start, oldDur: b.dur }; S.sheet = null; go("resched"); break; }
+    case "rs-time": if (S.rs) { S.rs.time = +v; render(true); } break;
+    case "rs-save": saveResched(); break;
     case "push-on": staffPushOn(true).then(ok => { if (ok) toast("Уведомления включены"); }); break;
     case "push-off": staffPushOff().then(() => toast("Уведомления выключены на этом телефоне")); break;
     case "push-later": lsSet("nb-push-later", Date.now() + 7 * 864e5); render(true); break;
@@ -1741,6 +1841,8 @@ document.addEventListener("input", e => {
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fNote") S.form.note = t.value;
   else if (t.id === "revText" && S.revDraft) S.revDraft.text = t.value;
+  else if (t.id === "tplText" && S.tplDraft) { S.tplDraft[S.tplTab || "ok"] = t.value; const pv = document.getElementById("tplPreview");
+    if (pv) pv.textContent = fillTpl(t.value, { name: "Мария", date: addDays(todayKey(), 2), start: 780, serviceNames: [(SET.services[0] || {}).name || "Маникюр"], artist: (SET.artists[0] || {}).id, phone: "+7 900 555-66-77" }); }
   else if (S.ns && t.id === "nsName") { S.ns.name = t.value; if (!S.ns.slugTouched) { S.ns.slug = translit(t.value); const e = document.getElementById("nsSlug"); if (e) e.value = S.ns.slug; } }
   else if (S.ns && t.id === "nsCity") S.ns.city = t.value;
   else if (S.ns && t.id === "nsPhone") S.ns.phone = t.value;
@@ -1778,6 +1880,8 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "rsDur" && S.rs) { S.rs.dur = +e.target.value; render(true); return; }
+  if (e.target.id === "rsDate" && S.rs && e.target.value) { S.rs.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.rs.time = null; render(true); return; }
   if (e.target.id === "mbDate" && S.mb && e.target.value) { S.mb.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.mb.time = null; S.mb.picked = false; render(true); return; }
   const t = e.target;
   if (t.dataset.d && t.tagName === "SELECT") t.dispatchEvent(new Event("input", { bubbles: true }));
