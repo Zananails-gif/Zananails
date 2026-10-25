@@ -56,7 +56,7 @@ async function busyOn(salon, date) {
 async function artistName(salon, id) {
   const s = await fsGet(pfx(salon) + "settings/salon");
   const a = s.data && (s.data.artists || []).find(x => x.id === id);
-  return { artist: a ? a.name : "", salonName: (s.data && s.data.name) || "Салон" };
+  return { artist: a ? String(a.name || "").replace(/^\s*мастер\s+/i, "").trim() : "", salonName: (s.data && s.data.name) || "Салон" };
 }
 
 /* ---------------- who is this staff member? ---------------- */

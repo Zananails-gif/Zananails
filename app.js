@@ -187,7 +187,9 @@ const S = {
 };
 
 const svcById = id => (SET ? SET.services.find(s => s.id === id) : null);
-const artistName = id => (SET && SET.artists.find(a => a.id === id) || {}).name || "Мастер";
+// master's name without a leading «Мастер» (names like «Мастер Алена»), so texts never say «мастер Мастер Алена»
+const bareName = n => String(n || "").replace(/^\s*мастер\s+/i, "").trim();
+const artistName = id => bareName((SET && SET.artists.find(a => a.id === id) || {}).name) || "Мастер";
 // master's round photo, or the first letter of the name when there is no photo yet
 const avatar = (id, name, px) => { const st = px ? `width:${px}px;height:${px}px;font-size:${Math.round(px * 0.41)}px` : "";
   return AVATARS[id] ? `<div class="thumb avatar av-img" style="${st}"><img src="${esc(AVATARS[id])}" alt=""></div>` : `<div class="thumb avatar" style="${st}">${esc((name || "?").charAt(0))}</div>`; };
@@ -276,7 +278,7 @@ const TPL_DEFAULT = {
 const TPL_KEYS = ["{имя}", "{дата}", "{время}", "{услуги}", "{мастер}", "{салон}", "{адрес}", "{ссылка}", "{телефон}"];
 const tplText = k => { const t = SET && SET.msgTpl && SET.msgTpl[k]; return t && t.trim() ? t : TPL_DEFAULT[k]; };
 function fillTpl(t, b) {
-  const v = { "{имя}": b.name || "", "{дата}": longDate(b.date).toLowerCase(), "{время}": hm(b.start), "{услуги}": (b.serviceNames || []).join(", ") || "услуга",
+  const v = { "{имя}": String(b.name || "").trim().split(/\s+/)[0] || "", "{дата}": longDate(b.date).toLowerCase(), "{время}": hm(b.start), "{услуги}": (b.serviceNames || []).join(", ") || "услуга",
     "{мастер}": artistName(b.artist), "{салон}": (SET && SET.name) || "салон", "{адрес}": (SET && SET.area) || "", "{ссылка}": appLink(), "{телефон}": b.phone || "" };
   return TPL_KEYS.reduce((x, k) => x.split(k).join(v[k]), t).replace(/ Адрес: \.| Адрес: (?=\s|$)/g, "");
 }
