@@ -96,6 +96,13 @@ service cloud.firestore {
     match /busy/{id} {
       allow read: if true;
       allow create: if mainOwner() || (
+        // перерыв мастера: только в своей колонке
+        myArtist() != '' && request.resource.data.get('brk', false) == true && request.resource.data.artist == myArtist()
+        && request.resource.data.keys().hasOnly(['date','start','dur','artist','brk','label'])
+        && request.resource.data.date is string && request.resource.data.date.size() == 10
+        && request.resource.data.start is int && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 1440
+        && request.resource.data.get('label', '') is string && request.resource.data.get('label', '').size() <= 40
+      ) || (
         request.resource.data.keys().hasOnly(['date','start','dur','artist','chair'])
         && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.get('chair', false)
         && getAfter(/databases/$(database)/documents/bookings/$(id)).data.status in ['pending', 'confirmed']
@@ -112,7 +119,8 @@ service cloud.firestore {
         && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.get('chair', false)
         && request.resource.data.artist == getAfter(/databases/$(database)/documents/bookings/$(id)).data.artist
         && (resource.data.artist == myArtist() || (get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/settings/salon).data.get('shareEdit', false) == true)));
-      allow delete: if mainOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
+      allow delete: if mainOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled'
+        || (myArtist() != '' && resource.data.get('brk', false) == true && resource.data.artist == myArtist());
     }
 
     // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера
@@ -279,6 +287,13 @@ service cloud.firestore {
       match /busy/{id} {
         allow read: if true;
         allow create: if sOwner() || (
+          // перерыв мастера: только в своей колонке
+          sArtist() != '' && request.resource.data.get('brk', false) == true && request.resource.data.artist == sArtist()
+          && request.resource.data.keys().hasOnly(['date','start','dur','artist','brk','label'])
+          && request.resource.data.date is string && request.resource.data.date.size() == 10
+          && request.resource.data.start is int && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 1440
+          && request.resource.data.get('label', '') is string && request.resource.data.get('label', '').size() <= 40
+        ) || (
           request.resource.data.keys().hasOnly(['date','start','dur','artist','chair'])
           && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.get('chair', false)
           && getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status in ['pending', 'confirmed']
@@ -295,7 +310,8 @@ service cloud.firestore {
           && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.get('chair', false)
           && request.resource.data.artist == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.artist
           && (resource.data.artist == sArtist() || (get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareEdit', false) == true)));
-        allow delete: if sOwner() || getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status == 'cancelled';
+        allow delete: if sOwner() || getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status == 'cancelled'
+          || (sArtist() != '' && resource.data.get('brk', false) == true && resource.data.artist == sArtist());
       }
 
       // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера

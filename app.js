@@ -1383,18 +1383,23 @@ function vJournal() {
     return `<button class="appt ${cls}" data-act="open" data-v="${esc(b.id)}" style="top:${(b.start - OPEN) / 60 * H + 2}px;height:${Math.max(22, b.dur / 60 * H - 4)}px;left:calc(44px + ${i} * ${colW} + 3px);width:calc(${colW} - 6px)" aria-label="${esc(b.name)}, ${hm(b.start)}, ${esc(svcs)}">
       <span style="font-weight:700;opacity:.85">${hm(b.start)}–${hm(b.start + b.dur)}</span><b>${esc(b.name)}</b><span>${esc(svcs)}</span></button>`;
   }).join("");
+  // master breaks / time off (grey blocks); tap to remove
+  const brks = BUSY.filter(x => x.brk && x.date === k && ARTS.some(a => a.id === x.artist)).map(x => {
+    const i = ARTS.findIndex(a => a.id === x.artist), mine = ROLE === "owner" || x.artist === MY_ARTIST, armed = S.armed === "brk:" + x.id;
+    return `<button class="appt a-break" ${mine ? `data-act="${armed ? "brk-del" : "brk-arm"}" data-v="${esc(x.id)}"` : "disabled"} style="top:${(x.start - OPEN) / 60 * H + 2}px;height:${Math.max(22, x.dur / 60 * H - 4)}px;left:calc(44px + ${i} * ${colW} + 3px);width:calc(${colW} - 6px)" aria-label="Перерыв ${hm(x.start)}–${hm(x.start + x.dur)}">
+      <span style="font-weight:700;opacity:.85">${hm(x.start)}–${hm(x.start + x.dur)}</span><b>${esc(x.label || "Перерыв")}</b>${armed ? `<span style="color:var(--bad);font-weight:700">Нажмите ещё раз — удалить</span>` : ""}</button>`; }).join("");
   const nm = nowMin();
   const nowLine = (k === todayKey() && nm >= OPEN && nm <= CLOSE) ? `<div class="now" style="top:${(nm - OPEN) / 60 * H}px"></div>` : "";
   return `<div class="jhead"><div><div class="step">Журнал записей</div><h1 class="h1">${esc(k === todayKey() ? "Сегодня, " + shortDate(k) : longDate(k))}</h1></div>
     <div class="btns"><button class="back" data-act="jday" data-v="-1" aria-label="Предыдущий день">${ICON.back}</button><button class="back" data-act="jday" data-v="1" aria-label="Следующий день">${ICON.next}</button></div></div>
   ${subBanner()}
   ${notifCard()}
-  <button class="btn" data-act="mb-new">${ICON.plus}Записать клиента</button>
+  <div class="btns"><button class="btn" style="flex:2" data-act="mb-new">${ICON.plus}Записать клиента</button><button class="btn ghost" style="flex:1" data-act="brk-new">Перерыв</button></div>
   <div class="stats"><span class="stat"><b>${day.length}</b> ${plural(day.length, ["запись", "записи", "записей"])}</span><span class="stat">Выручка: <b>${rub(revenue)}</b></span>${k !== todayKey() ? `<button class="stat" data-act="jtoday" style="font-weight:700;color:var(--accent)">К сегодняшнему дню</button>` : ""}</div>
   ${isClosed(k) ? `<div class="empty">Выходной день.</div>` : `
   <div class="jgrid">
     <div class="jcols" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${ARTS.map(a => `<span>${esc(a.name)}</span>`).join("")}</div>
-    <div class="jbody" style="height:${(CLOSE - OPEN) / 60 * H + 8}px;margin-top:8px">${hours}${vlines}${k >= todayKey() ? jSlots(ARTS, OPEN, CLOSE, H, colW, k) : ""}${blocks}${nowLine}</div>
+    <div class="jbody" style="height:${(CLOSE - OPEN) / 60 * H + 8}px;margin-top:8px">${hours}${vlines}${k >= todayKey() ? jSlots(ARTS, OPEN, CLOSE, H, colW, k) : ""}${blocks}${brks}${nowLine}</div>
   </div>`}
   <div class="legend"><span><i style="background:var(--accent-soft);outline:1.5px dashed var(--accent)"></i>Новая, ждёт подтверждения</span><span><i style="background:var(--accent-soft)"></i>Подтверждена</span></div>`;
 }
@@ -1469,6 +1474,48 @@ function jSlots(ARTS, OPEN, CLOSE, H, colW, k) {
     }
   });
   return out;
+}
+/* ---------- master breaks / time off ---------- */
+function vBreak() {
+  const K = S.brk, own = ROLE === "master";
+  const times = []; for (let t = SET.open; t < SET.close; t += STEP) times.push(t);
+  const durs = []; for (let m = 15; m <= SET.close - SET.open; m += 15) durs.push(m);
+  return `${header("", "Перерыв", "journal")}
+  <p class="small muted" style="margin-top:-8px">Обед, личные дела, выходной — в это время клиенты не смогут записаться.</p>
+  ${own ? "" : `<div class="card stack"><b>Мастер</b>${chips("brk-artist", SET.artists.map(a => [a.id, a.name]), K.artist, "Мастер")}</div>`}
+  <div class="card stack">
+    <label class="field" for="brkDate">Дата<input id="brkDate" type="date" value="${esc(K.date)}" min="${todayKey()}"></label>
+    <div class="chips chips-wrap"><button class="chip" data-act="brk-all" aria-pressed="${K.allDay}">Весь день</button></div>
+    ${K.allDay ? "" : `<div class="grid2">
+      <label class="field" for="brkStart">С<select id="brkStart">${times.map(t => `<option value="${t}" ${t === K.start ? "selected" : ""}>${hm(t)}</option>`).join("")}</select></label>
+      <label class="field" for="brkDur">Сколько<select id="brkDur">${durs.map(m => `<option value="${m}" ${m === K.dur ? "selected" : ""}>${durTxt(m)}</option>`).join("")}</select></label></div>
+      <span class="tiny muted" style="margin-top:-4px">До ${hm(Math.min(SET.close, K.start + K.dur))}</span>`}
+    <label class="field" for="brkLabel">Название (необязательно)<input id="brkLabel" maxlength="40" autocomplete="off" value="${esc(K.label)}" placeholder="Обед, личное, выходной…"></label>
+    <label class="field" for="brkRep">Повторять<select id="brkRep">${[[1, "Только этот день"], [7, "Каждый рабочий день — 1 неделя"], [14, "Каждый рабочий день — 2 недели"], [30, "Каждый рабочий день — месяц"]].map(([n, l]) => `<option value="${n}" ${K.rep === n ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+  </div>
+  ${S.brkErr ? `<div class="err-box" role="alert">${esc(S.brkErr)}</div>` : ""}
+  <button class="btn" data-act="brk-save" ${S.saving ? "disabled" : ""}>${S.saving ? "Сохраняем…" : "Добавить перерыв"}</button>
+  <p class="tiny muted">Убрать перерыв: нажмите на серый блок в журнале и ещё раз — для подтверждения.</p>`;
+}
+async function saveBreak() {
+  const K = S.brk, artist = ROLE === "master" ? MY_ARTIST : K.artist; S.brkErr = "";
+  if (!artist) { S.brkErr = "Выберите мастера"; render(true); return; }
+  const start = K.allDay ? SET.open : K.start, dur = K.allDay ? SET.close - SET.open : Math.min(K.dur, SET.close - K.start);
+  if (dur <= 0) { S.brkErr = "Проверьте время"; render(true); return; }
+  const days = []; let d = K.date;
+  for (let i = 0; days.length < (K.rep === 1 ? 1 : 400) && i < K.rep; i++, d = addDays(d, 1)) { if (K.rep === 1 || !isClosed(d)) days.push(d); }
+  const clash = days.filter(day => !artistFree(artist, day, start, dur));
+  if (K.rep === 1 && clash.length) { S.brkErr = "На это время уже есть запись или перерыв. Перенесите запись или выберите другое время."; render(true); return; }
+  const ok = days.filter(day => !clash.includes(day));
+  S.saving = true; render(true);
+  try {
+    const batch = writeBatch(db);
+    ok.forEach(day => batch.set(doc(SC("busy")), { date: day, start, dur, artist, brk: true, label: (K.label || "").trim().slice(0, 40) }));
+    await batch.commit();
+    toast(ok.length === 1 ? "Перерыв добавлен" : "Добавлено перерывов: " + ok.length + (clash.length ? " (пропущено дней с записями: " + clash.length + ")" : ""));
+    S.saving = false; S.brk = null; S.jDate = K.date; watchJday(); go("journal"); return;
+  } catch (err) { S.brkErr = errText(err); }
+  S.saving = false; render(true);
 }
 /* ---------- reschedule a booking (new date / time) ---------- */
 function vResched() {
@@ -1900,6 +1947,7 @@ function render(keepScroll) {
         case "clientNew": html = vClientNew(); break;
         case "tpl": html = ROLE === "owner" ? vTpl() : vJournal(); break;
         case "resched": html = S.rs ? vResched() : vJournal(); break;
+        case "break": html = S.brk ? vBreak() : vJournal(); break;
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
         case "manual": html = S.mb ? vManual() : vJournal(); break;
@@ -2001,6 +2049,13 @@ document.addEventListener("click", async e => {
     case "tpl-save": { const e = document.getElementById("tplText"); if (e && S.tplDraft) S.tplDraft[S.tplTab || "ok"] = e.value; saveTpl(); break; }
     case "rs-open": { const b = findBooking(v); if (!b || !canEditBooking(b)) break; const sel0 = (b.services || []).filter(svcById);
       S.rs = { id: b.id, date: b.date < todayKey() ? todayKey() : b.date, time: b.date < todayKey() ? null : b.start, dur: b.dur, oldDate: b.date, oldTime: b.start, oldDur: b.dur, sel: sel0.slice(), oldSel: sel0.join() }; S.sheet = null; go("resched"); break; }
+    case "brk-new": S.brk = { artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : null), date: S.jDate < todayKey() ? todayKey() : S.jDate,
+      start: Math.min(Math.max(SET.open, 13 * 60), SET.close - 60), dur: 60, allDay: false, label: "", rep: 1 }; S.brkErr = ""; go("break"); break;
+    case "brk-artist": if (S.brk) { S.brk.artist = v; render(true); } break;
+    case "brk-all": if (S.brk) { S.brk.allDay = !S.brk.allDay; render(true); } break;
+    case "brk-save": saveBreak(); break;
+    case "brk-arm": S.armed = "brk:" + v; render(true); setTimeout(() => { if (S.armed === "brk:" + v) { S.armed = null; render(true); } }, 4000); break;
+    case "brk-del": try { await deleteDoc(SD("busy", v)); toast("Перерыв удалён"); } catch (err) { toast(errText(err)); } S.armed = null; render(true); break;
     case "rs-time": if (S.rs) { S.rs.time = +v; render(true); } break;
     case "rs-svc": if (S.rs) { const R = S.rs; R.sel = R.sel.includes(v) ? R.sel.filter(x => x !== v) : R.sel.concat(v);
       const d = R.sel.filter(svcById).reduce((n, id) => n + svcById(id).dur, 0); if (d) R.dur = d; render(true); } break;
@@ -2083,6 +2138,7 @@ document.addEventListener("input", e => {
   else if (t.id === "fSurname") { S.form.surname = t.value; lsSet("nb-form", S.form); }
   else if (S.mb && t.id === "mbSurname") S.mb.surname = t.value;
   else if (S.adm && t.id === "admEmail") S.adm.email = t.value;
+  else if (S.brk && t.id === "brkLabel") S.brk.label = t.value;
   else if (t.id === "clQ") { S.clQ = t.value; const box = document.getElementById("clList"); if (box) box.innerHTML = clientRows(S.clQ.trim().length >= 2 ? matchClients(S.clQ) : clientList()); }
   else if (t.id === "clNote") S.clNote = t.value;
   else if (t.id === "clName") S.clName = t.value;
@@ -2133,6 +2189,9 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("change", async e => {
+  if (S.brk && ["brkDate", "brkStart", "brkDur", "brkRep"].includes(e.target.id)) { const K = S.brk, v = e.target.value;
+    if (e.target.id === "brkDate" && v) K.date = v < todayKey() ? todayKey() : v; else if (e.target.id === "brkStart") K.start = +v; else if (e.target.id === "brkDur") K.dur = +v; else if (e.target.id === "brkRep") K.rep = +v;
+    render(true); return; }
   if (e.target.id === "rsDur" && S.rs) { S.rs.dur = +e.target.value; render(true); return; }
   if (e.target.id === "rsDate" && S.rs && e.target.value) { S.rs.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.rs.time = null; render(true); return; }
   if (e.target.id === "mbDate" && S.mb && e.target.value) { S.mb.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.mb.time = null; S.mb.picked = false; render(true); return; }

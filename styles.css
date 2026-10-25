@@ -270,3 +270,5 @@ textarea{font:inherit;font-size:16px;border:1px solid var(--line2);border-radius
 .picked{display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--ok-soft);color:var(--ok-text);border-radius:12px;padding:12px}
 .mp-box{display:flex;flex-direction:column;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px}
 .mp-row{display:grid;grid-template-columns:minmax(0,1fr) 120px;gap:8px;align-items:center;font-size:14px}
+.a-break{background:repeating-linear-gradient(135deg,var(--soft2),var(--soft2) 6px,var(--surface) 6px,var(--surface) 12px);color:var(--muted);border-left:3px solid var(--line2)}
+.a-break b{color:var(--fg)}
