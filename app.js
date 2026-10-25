@@ -227,7 +227,18 @@ function slotsFor(date, artist, dur, needChair = selNeedsChair(), staff = false,
   return out;
 }
 const selDur = () => S.sel.reduce((n, id) => n + (svcById(id)?.dur || 0), 0);
-const selTotal = () => S.sel.reduce((n, id) => n + Number(svcById(id)?.price || 0), 0);
+// a service's price for a master: her own price if the owner set one, else the usual price
+function priceFor(svc, aid) {
+  if (!svc) return 0;
+  const mp = svc.mp || {}, v = aid && aid !== "any" ? Number(mp[aid]) : 0;
+  return v > 0 ? v : Number(svc.price || 0);
+}
+// lowest price among masters (for «от …»)
+const minPrice = svc => Math.min(Number(svc.price || 0), ...Object.values(svc.mp || {}).map(Number).filter(x => x > 0));
+const hasMasterPrices = svc => Object.values(svc.mp || {}).some(x => Number(x) > 0 && Number(x) !== Number(svc.price));
+const sumFor = (ids, aid) => ids.reduce((n, id) => n + priceFor(svcById(id), aid), 0);
+const selTotal = (aid = S.artist) => aid && aid !== "any" ? sumFor(S.sel, aid) : S.sel.reduce((n, id) => n + (svcById(id) ? minPrice(svcById(id)) : 0), 0);
+const selFrom = () => (!S.artist || S.artist === "any") && S.sel.some(id => hasMasterPrices(svcById(id) || {}));
 function firstOpenDay() {
   let k = todayKey();
   for (let i = 0; i < DAYS_AHEAD; i++) { if (slotsFor(k, S.artist, selDur() || 15).length) return k; k = addDays(k, 1); }
@@ -1031,14 +1042,14 @@ function vServices() {
     const on = S.sel.includes(s.id);
     return `<button class="opt" data-act="svc" data-v="${esc(s.id)}" aria-pressed="${on}">
     <div class="thumb">${ICON.polish}</div>
-    <div class="optbody"><b>${esc(s.name)}</b><span class="tiny muted">${durTxt(s.dur)}</span><span class="price">${rub(s.price)}</span></div>
+    <div class="optbody"><b>${esc(s.name)}</b><span class="tiny muted">${durTxt(s.dur)}</span><span class="price">${hasMasterPrices(s) ? "от " + rub(minPrice(s)) : rub(s.price)}</span></div>
     <div class="check">${on ? ICON.check : ""}</div></button>`;
   }).join("") || `<div class="empty">В этой категории пока нет услуг.</div>`}</div>
   <p class="small muted">Можно выбрать услуги из разных категорий.</p>`;
 }
 function barServices() {
   const n = S.sel.length;
-  return `<div class="cta wrap"><div class="total"><span class="tiny muted">${n} ${plural(n, ["услуга", "услуги", "услуг"])} · ${durTxt(selDur() || 0)}</span><b>${rub(selTotal())}</b></div>
+  return `<div class="cta wrap"><div class="total"><span class="tiny muted">${n} ${plural(n, ["услуга", "услуги", "услуг"])} · ${durTxt(selDur() || 0)}</span><b>${selFrom() ? "от " : ""}${rub(selTotal())}</b></div>
   <button class="btn" data-act="go" data-v="artist" ${n ? "" : "disabled"}>Далее</button></div>`;
 }
 
@@ -1054,6 +1065,7 @@ function vArtist() {
     return `<button class="opt" data-act="artist" data-v="${esc(o.id)}" aria-pressed="${on}">
       ${o.id === "any" ? `<div class="thumb avatar">✱</div>` : avatar(o.id, o.name)}
       <div class="optbody"><b>${esc(o.name)}</b><span class="tiny muted">${o.role}</span><span class="tiny green">${next}</span></div>
+      ${S.sel.length ? `<b class="price" style="white-space:nowrap">${o.id === "any" ? (S.sel.some(id => hasMasterPrices(svcById(id) || {})) ? "от " : "") + rub(selTotal("any")) : rub(sumFor(S.sel, o.id))}</b>` : ""}
       <div class="check">${on ? ICON.check : ""}</div></button>`;
   }).join("")}</div>`;
 }
@@ -1096,10 +1108,10 @@ function vDetails() {
     <div class="row"><div class="thumb" style="flex-direction:column;width:48px;height:48px"><span class="tiny" style="font-weight:700">${DOW[d.getDay()].toUpperCase()}</span><b style="font-size:17px;line-height:1">${d.getDate()}</b></div>
       <div><b>${esc(longDate(S.date))}, ${hm(S.time)}</b><div class="small muted">${durTxt(selDur())} · ${esc(SET.name)}</div></div></div>
     <div class="hr"></div>
-    ${S.sel.map(id => { const s = svcById(id); return s ? `<div class="sumrow"><span>${esc(s.name)}</span><span class="price">${rub(s.price)}</span></div>` : ""; }).join("")}
+    ${S.sel.map(id => { const s = svcById(id); return s ? `<div class="sumrow"><span>${esc(s.name)}</span><span class="price">${selFrom() ? "от " + rub(minPrice(s)) : rub(priceFor(s, S.artist))}</span></div>` : ""; }).join("")}
     <div class="sumrow"><span class="muted">Мастер</span><span style="font-weight:600">${esc(S.artist === "any" ? "Любой свободный" : artistName(S.artist))}</span></div>
     <div class="hr"></div>
-    <div class="sumrow" style="font-size:16px;font-weight:700"><span>Итого</span><span class="price">${rub(selTotal())}</span></div>
+    <div class="sumrow" style="font-size:16px;font-weight:700"><span>Итого</span><span class="price">${selFrom() ? "от " : ""}${rub(selTotal())}</span></div>
   </div>
   <form id="detailsForm" class="stack" novalidate>
     <h2 class="h2">Ваши данные</h2>
@@ -1389,7 +1401,7 @@ function vJournal() {
 /* ---------- staff: add a booking by hand (phone call / walk-in) ---------- */
 function vManual() {
   const M = S.mb, own = ROLE === "master";
-  const sel = M.sel.filter(svcById), dur = sel.reduce((n, id) => n + svcById(id).dur, 0), total = sel.reduce((n, id) => n + Number(svcById(id).price || 0), 0);
+  const sel = M.sel.filter(svcById), dur = sel.reduce((n, id) => n + svcById(id).dur, 0), total = sumFor(sel, M.artist);
   const chair = sel.some(id => svcById(id).cat === PEDI_CAT);
   const slots = M.artist && dur ? slotsFor(M.date, M.artist, dur, chair, true) : [];
   const cats = CATS.filter(c => SET.services.some(x => x.cat === c.id));
@@ -1402,7 +1414,7 @@ function vManual() {
   <div class="card stack"><b>Услуги</b>
     ${cats.map(c => `<div class="tiny muted" style="font-weight:700;margin-bottom:-4px">${esc(c.id)}</div>
       <div class="list">${SET.services.filter(x => x.cat === c.id).map(x => `<button class="opt" data-act="mb-svc" data-v="${esc(x.id)}" aria-pressed="${M.sel.includes(x.id)}" style="padding:10px 12px">
-        <div class="optbody"><b>${esc(x.name)}</b><span class="tiny muted">${esc(durTxt(x.dur))} · ${rub(x.price)}</span></div><div class="check">${M.sel.includes(x.id) ? ICON.check : ""}</div></button>`).join("")}</div>`).join("")}
+        <div class="optbody"><b>${esc(x.name)}</b><span class="tiny muted">${esc(durTxt(x.dur))} · ${rub(priceFor(x, M.artist))}</span></div><div class="check">${M.sel.includes(x.id) ? ICON.check : ""}</div></button>`).join("")}</div>`).join("")}
     ${sel.length ? `<div class="small" style="font-weight:600">Итого: ${esc(durTxt(dur))} · ${rub(total)}</div>` : ""}
   </div>
   <div class="card stack"><b>Дата и время</b>
@@ -1435,7 +1447,7 @@ async function saveManual() {
   if (!artist || !artistFree(artist, M.date, M.time, dur) || (chair && !chairFree(M.date, M.time, dur))) { toast("Это время уже занято. Выберите другое."); M.time = null; render(true); return; }
   const id = doc(SC("bookings")).id, now = Date.now();
   const data = { date: M.date, start: M.time, dur, artist, anyArtist: false, services: sel, serviceNames: sel.map(x => svcById(x).name),
-    total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), name: fullName(M.name, M.surname), phone: M.phone.trim().slice(0, 25),
+    total: Math.round(sumFor(sel, artist)), name: fullName(M.name, M.surname), phone: M.phone.trim().slice(0, 25),
     note: M.note.trim().slice(0, 250), status: "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {}) };
   S.saving = true; render(true);
   try {
@@ -1463,7 +1475,7 @@ function vResched() {
   const R = S.rs, b = R && findBooking(R.id);
   if (!b) return vJournal();
   const sel = R.sel.filter(svcById), chair = sel.some(id => svcById(id).cat === PEDI_CAT);
-  const dur = R.dur || b.dur, total = sel.reduce((n, id) => n + Number(svcById(id).price || 0), 0);
+  const dur = R.dur || b.dur, total = sumFor(sel, b.artist);
   const slots = slotsFor(R.date, b.artist, dur, chair, true, b.id);
   const cats = CATS.filter(c => SET.services.some(x => x.cat === c.id));
   return `${header("", "Изменить запись", "journal")}
@@ -1471,7 +1483,7 @@ function vResched() {
   <div class="card stack"><b>Услуги</b>
     ${cats.map(c => `<div class="tiny muted" style="font-weight:700;margin-bottom:-4px">${esc(c.id)}</div>
       <div class="list">${SET.services.filter(x => x.cat === c.id).map(x => `<button class="opt" data-act="rs-svc" data-v="${esc(x.id)}" aria-pressed="${R.sel.includes(x.id)}" style="padding:10px 12px">
-        <div class="optbody"><b>${esc(x.name)}</b><span class="tiny muted">${esc(durTxt(x.dur))} · ${rub(x.price)}</span></div><div class="check">${R.sel.includes(x.id) ? ICON.check : ""}</div></button>`).join("")}</div>`).join("")}
+        <div class="optbody"><b>${esc(x.name)}</b><span class="tiny muted">${esc(durTxt(x.dur))} · ${rub(priceFor(x, b.artist))}</span></div><div class="check">${R.sel.includes(x.id) ? ICON.check : ""}</div></button>`).join("")}</div>`).join("")}
     ${sel.length ? `<div class="small" style="font-weight:600">Итого: ${rub(total)}</div>` : `<div class="err">Выберите хотя бы одну услугу</div>`}
   </div>
   <div class="card stack"><b>Сколько займёт визит</b>
@@ -1497,7 +1509,7 @@ async function saveResched() {
     const batch = writeBatch(db);
     const svcChanged = sel.join() !== R.oldSel;
     batch.update(SD("bookings", b.id), Object.assign({ date: R.date, start: R.time, dur: R.dur, updated: Date.now() },
-      svcChanged ? { services: sel, serviceNames: sel.map(x => svcById(x).name), total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), chair } : {}));
+      svcChanged ? { services: sel, serviceNames: sel.map(x => svcById(x).name), total: Math.round(sumFor(sel, b.artist)), chair } : {}));
     batch.update(SD("busy", b.id), Object.assign({ date: R.date, start: R.time, dur: R.dur }, svcChanged ? { chair } : {}));
     await batch.commit();
     pushEvent(b.id, "move", "staff");
@@ -1638,7 +1650,14 @@ function vSettings() {
         <label class="mini" for="svp${i}">Цена, ₽<input class="inp" id="svp${i}" data-d="svc:${i}:price" inputmode="numeric" value="${esc(s.price)}"></label>
         <label class="mini" for="svd${i}">Время<select class="inp" id="svd${i}" data-d="svc:${i}:dur">${durOptions(s.dur)}</select></label>
         <button class="icon-btn" data-act="del-svc" data-v="${i}" aria-label="Удалить услугу ${esc(s.name)}">${ICON.trash}</button>
-      </div></div>`).join("")}
+      </div>
+      ${D.artists.length > 1 ? (S.mpOpen && S.mpOpen[s.id]) || hasMasterPrices(s) && S.mpOpen?.[s.id] !== false
+        ? `<div class="mp-box">${D.artists.map(a => `<label class="mp-row" for="mp${i}_${esc(a.id)}"><span>${esc(a.name || "Мастер")}</span>
+            <input class="inp" id="mp${i}_${esc(a.id)}" data-d="svcmp:${i}:${esc(a.id)}" inputmode="numeric" placeholder="как обычно" value="${esc((s.mp || {})[a.id] || "")}"></label>`).join("")}
+            <span class="tiny muted">Пусто — мастер работает по обычной цене.</span>
+            <button class="linkbtn" style="align-self:flex-start;padding-left:0" data-act="mp-toggle" data-v="${esc(s.id)}">Скрыть цены мастеров</button></div>`
+        : `<button class="linkbtn" style="align-self:flex-start;padding-left:0" data-act="mp-toggle" data-v="${esc(s.id)}">Своя цена у мастера ›</button>` : ""}
+      </div>`).join("")}
     <button class="btn sm ghost" data-act="add-svc">${ICON.plus}Добавить услугу</button>
   </div>
   ${installBlock()}
@@ -1751,7 +1770,7 @@ function vReportMaster(mine) {
   const svc = {};
   done.forEach(b => (b.services || []).forEach((id, i) => {
     const s = SET.services.find(x => x.id === id), nm = (b.serviceNames || [])[i] || (s && s.name) || "Услуга";
-    svc[nm] = svc[nm] || { n: 0, r: 0 }; svc[nm].n++; svc[nm].r += s ? Number(s.price || 0) : Number(b.total || 0) / Math.max(1, (b.services || []).length);
+    svc[nm] = svc[nm] || { n: 0, r: 0 }; svc[nm].n++; svc[nm].r += s ? priceFor(s, b.artist) : Number(b.total || 0) / Math.max(1, (b.services || []).length);
   }));
   const rows = done.concat(canc).sort((x, y) => (y.date + hm(y.start)).localeCompare(x.date + hm(x.start)));
   const mins = done.reduce((n, b) => n + Number(b.dur || 0), 0);
@@ -1972,6 +1991,7 @@ document.addEventListener("click", async e => {
       S.mb = { artist: ROLE === "master" ? MY_ARTIST : (fav && SET.artists.some(a => a.id === fav) ? fav : SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: todayKey(), time: null, name: c.name, surname: "", phone: c.phone, note: "", clientKey: c.key }; S.tried = false; go("manual"); break; }
     case "mb-pick": { const c = clientList().find(x => x.key === v); if (!c || !S.mb) break; Object.assign(S.mb, { name: c.name, surname: "", phone: c.phone, clientKey: c.key }); render(true); break; }
     case "mb-unpick": if (S.mb) { Object.assign(S.mb, { name: "", surname: "", phone: "", clientKey: null }); render(true); } break;
+    case "mp-toggle": { S.mpOpen = Object.assign({}, S.mpOpen || {}); const sv = (S.draft || SET).services.find(x => x.id === v); const open = (S.mpOpen[v]) || (hasMasterPrices(sv || {}) && S.mpOpen[v] !== false); S.mpOpen[v] = !open; render(true); break; }
     case "d-toggle": if (S.draft) { S.draft[v] = !S.draft[v]; if (v === "shareView" && !S.draft.shareView) S.draft.shareEdit = false; S.dirty = true; S.draftErr = ""; render(true); } break;
     case "tpl-tab": { const e = document.getElementById("tplText"); if (e && S.tplDraft) S.tplDraft[S.tplTab || "ok"] = e.value; S.tplTab = v; render(true); break; }
     case "tpl-ins": { const e = document.getElementById("tplText"); if (!e || !S.tplDraft) break; const a = e.selectionStart ?? e.value.length, z = e.selectionEnd ?? a;
@@ -2108,6 +2128,7 @@ document.addEventListener("input", e => {
       else if (p[2] === "price") { const n = parseInt(t.value.replace(/\D/g, ""), 10); s.price = isNaN(n) ? 0 : n; }
       else if (p[2] === "dur") { const n = parseInt(t.value, 10); s.dur = isNaN(n) ? 0 : n; }
     }
+    else if (p[0] === "svcmp") { const s = D.services[+p[1]], n = parseInt(t.value.replace(/\D/g, ""), 10); s.mp = Object.assign({}, s.mp || {}); if (n > 0) s.mp[p[2]] = n; else delete s.mp[p[2]]; }
     if (!S.dirty) { S.dirty = true; S.draftErr = ""; refreshChrome(); }
   }
 });
@@ -2269,7 +2290,7 @@ async function book() {
   const services = S.sel.filter(svcById);
   const data = {
     date: S.date, start: S.time, dur, artist, anyArtist: S.artist === "any",
-    services, serviceNames: services.map(x => svcById(x).name), total: Math.round(selTotal()),
+    services, serviceNames: services.map(x => svcById(x).name), total: Math.round(sumFor(services, artist)),
     name: fullName(f.name, f.surname), phone: f.phone.trim().slice(0, 25), note: f.note.trim().slice(0, 250),
     status: SET.autoConfirm === false ? "pending" : "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {})
   };
@@ -2313,7 +2334,8 @@ async function moveBooking(id, artist) {
   if (!b || !artistFree(artist, b.date, b.start, b.dur, b.id)) { toast("У этого мастера уже занято"); render(true); return; }
   try {
     const batch = writeBatch(db);
-    batch.update(SD("bookings", id), { artist, anyArtist: false, updated: Date.now() });
+    const svcs = (b.services || []).filter(svcById);
+    batch.update(SD("bookings", id), Object.assign({ artist, anyArtist: false, updated: Date.now() }, svcs.length ? { total: Math.round(sumFor(svcs, artist)) } : {}));
     batch.update(SD("busy", id), { artist });
     await batch.commit();
     pushEvent(id, "move", "staff");
@@ -2326,7 +2348,8 @@ async function saveSettings() {
   const fail = msg => { S.draftErr = msg; refreshChrome(); };
   D.name = (D.name || "").trim(); D.area = (D.area || "").trim(); D.phone = (D.phone || "").trim(); D.telegram = tgUser(D.telegram);
   D.artists = D.artists.map(a => ({ id: a.id, name: (a.name || "").trim(), email: (a.email || "").trim().toLowerCase() }));
-  D.services = D.services.map(s => ({ id: s.id, cat: s.cat, name: (s.name || "").trim(), dur: Math.round((Number(s.dur) || 0) / 5) * 5, price: Math.round(Number(s.price) || 0) }));
+  D.services = D.services.map(s => { const mp = {}; Object.keys(s.mp || {}).forEach(a => { const v = Math.round(Number(s.mp[a]) || 0); if (v > 0 && D.artists.some(x => x.id === a)) mp[a] = v; });
+    return Object.assign({ id: s.id, cat: s.cat, name: (s.name || "").trim(), dur: Math.round((Number(s.dur) || 0) / 5) * 5, price: Math.round(Number(s.price) || 0) }, Object.keys(mp).length ? { mp } : {}); });
   if (!D.name) return fail("Укажите название салона");
   if (D.close <= D.open) return fail("Время закрытия должно быть позже открытия");
   if (!(D.pediChairs >= 1 && D.pediChairs <= 10)) return fail("Педикюрных кресел: от 1 до 10");
