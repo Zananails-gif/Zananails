@@ -1461,11 +1461,18 @@ function jSlots(ARTS, OPEN, CLOSE, H, colW, k) {
 function vResched() {
   const R = S.rs, b = R && findBooking(R.id);
   if (!b) return vJournal();
-  const chair = !!b.chair || (b.services || []).some(id => (svcById(id) || {}).cat === PEDI_CAT);
-  const dur = R.dur || b.dur;
+  const sel = R.sel.filter(svcById), chair = sel.some(id => svcById(id).cat === PEDI_CAT);
+  const dur = R.dur || b.dur, total = sel.reduce((n, id) => n + Number(svcById(id).price || 0), 0);
   const slots = slotsFor(R.date, b.artist, dur, chair, true, b.id);
+  const cats = CATS.filter(c => SET.services.some(x => x.cat === c.id));
   return `${header("", "Изменить запись", "journal")}
-  <div class="card stack" style="gap:4px"><b>${esc(b.name)}</b><span class="small muted">Сейчас: ${esc(shortDate(b.date))} в ${hm(b.start)}–${hm(b.start + b.dur)} · ${esc((b.serviceNames || []).join(", "))} · мастер ${esc(artistName(b.artist))}</span></div>
+  <div class="card stack" style="gap:4px"><b>${esc(b.name)}</b><span class="small muted">Сейчас: ${esc(shortDate(b.date))} в ${hm(b.start)}–${hm(b.start + b.dur)} · ${esc((b.serviceNames || []).join(", "))} · ${rub(b.total)} · мастер ${esc(artistName(b.artist))}</span></div>
+  <div class="card stack"><b>Услуги</b>
+    ${cats.map(c => `<div class="tiny muted" style="font-weight:700;margin-bottom:-4px">${esc(c.id)}</div>
+      <div class="list">${SET.services.filter(x => x.cat === c.id).map(x => `<button class="opt" data-act="rs-svc" data-v="${esc(x.id)}" aria-pressed="${R.sel.includes(x.id)}" style="padding:10px 12px">
+        <div class="optbody"><b>${esc(x.name)}</b><span class="tiny muted">${esc(durTxt(x.dur))} · ${rub(x.price)}</span></div><div class="check">${R.sel.includes(x.id) ? ICON.check : ""}</div></button>`).join("")}</div>`).join("")}
+    ${sel.length ? `<div class="small" style="font-weight:600">Итого: ${rub(total)}</div>` : `<div class="err">Выберите хотя бы одну услугу</div>`}
+  </div>
   <div class="card stack"><b>Сколько займёт визит</b>
     <label class="field" for="rsDur">Длительность<select id="rsDur">${durOptions(dur)}</select></label>
     <span class="tiny muted" style="margin-top:-4px">Мастер знает клиента лучше: можно сделать визит короче или длиннее.</span></div>
@@ -1477,17 +1484,20 @@ function vResched() {
   </div>
   <p class="tiny muted">Клиент получит уведомление, если включил напоминания. Можно также написать ему в WhatsApp, Telegram или SMS — кнопки появятся после переноса.</p>`;
 }
-const barResched = () => { const R = S.rs, ok = R && R.time != null && !(R.date === R.oldDate && R.time === R.oldTime && R.dur === R.oldDur);
+const barResched = () => { const R = S.rs, ok = R && R.time != null && R.sel.filter(svcById).length && !(R.date === R.oldDate && R.time === R.oldTime && R.dur === R.oldDur && R.sel.join() === R.oldSel);
   return `<div class="cta wrap"><button class="btn" style="flex:1" data-act="rs-save" ${!ok || S.saving ? "disabled" : ""}>${S.saving ? "Сохраняем…" : ok ? "Сохранить: " + esc(shortDate(R.date)) + ", " + hm(R.time) + "–" + hm(R.time + R.dur) : "Выберите время"}</button></div>`; };
 async function saveResched() {
   const R = S.rs, b = findBooking(R.id); if (!b || R.time == null) return;
-  const chair = !!b.chair || (b.services || []).some(id => (svcById(id) || {}).cat === PEDI_CAT);
+  const sel = R.sel.filter(svcById); if (!sel.length) return;
+  const chair = sel.some(id => svcById(id).cat === PEDI_CAT);
   if (!artistFree(b.artist, R.date, R.time, R.dur, b.id) || (chair && !chairFree(R.date, R.time, R.dur, b.id))) { toast("Это время уже занято. Выберите другое."); R.time = null; render(true); return; }
   S.saving = true; render(true);
   try {
     const batch = writeBatch(db);
-    batch.update(SD("bookings", b.id), { date: R.date, start: R.time, dur: R.dur, updated: Date.now() });
-    batch.update(SD("busy", b.id), { date: R.date, start: R.time, dur: R.dur });
+    const svcChanged = sel.join() !== R.oldSel;
+    batch.update(SD("bookings", b.id), Object.assign({ date: R.date, start: R.time, dur: R.dur, updated: Date.now() },
+      svcChanged ? { services: sel, serviceNames: sel.map(x => svcById(x).name), total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), chair } : {}));
+    batch.update(SD("busy", b.id), Object.assign({ date: R.date, start: R.time, dur: R.dur }, svcChanged ? { chair } : {}));
     await batch.commit();
     pushEvent(b.id, "move", "staff");
     toast("Запись изменена: " + shortDate(R.date) + ", " + hm(R.time) + "–" + hm(R.time + R.dur));
@@ -1792,7 +1802,7 @@ function sheet() {
     ${b.status !== "cancelled" && others.length ? `<label class="field" for="moveArtist">Передать другому мастеру
       <select id="moveArtist" data-move="${esc(b.id)}"><option value="">Оставить: ${esc(artistName(b.artist))}</option>${others.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join("")}</select></label>` : ""}
     ${!edit ? `<p class="small muted">Только просмотр — изменить запись может мастер ${esc(artistName(b.artist))} или владелец.</p>` : ""}
-    ${edit && b.status !== "cancelled" ? `<button class="btn ghost" data-act="rs-open" data-v="${esc(b.id)}">${ICON.cal || ""}Изменить время или длительность</button>` : ""}
+    ${edit && b.status !== "cancelled" ? `<button class="btn ghost" data-act="rs-open" data-v="${esc(b.id)}">${ICON.cal || ""}Изменить запись: время, услуги, длительность</button>` : ""}
     ${!edit ? "" : b.status === "pending" ? `<button class="btn" data-act="accept" data-v="${esc(b.id)}">Подтвердить запись</button>` : clientMsgButtons(b)}
     ${edit && b.status !== "cancelled" ? (S.armed === b.id
       ? `<div class="btns"><button class="btn sm solid-danger" data-act="cancel" data-v="${esc(b.id)}">Да, отменить</button><button class="btn sm ghost" data-act="disarm">Не отменять</button></div>`
@@ -1961,8 +1971,11 @@ document.addEventListener("click", async e => {
       const e2 = document.getElementById("tplText"); if (e2) { e2.focus(); e2.setSelectionRange(a + v.length, a + v.length); } break; }
     case "tpl-reset": if (S.tplDraft) { S.tplDraft[S.tplTab || "ok"] = TPL_DEFAULT[S.tplTab || "ok"]; render(true); } break;
     case "tpl-save": { const e = document.getElementById("tplText"); if (e && S.tplDraft) S.tplDraft[S.tplTab || "ok"] = e.value; saveTpl(); break; }
-    case "rs-open": { const b = findBooking(v); if (!b || !canEditBooking(b)) break; S.rs = { id: b.id, date: b.date < todayKey() ? todayKey() : b.date, time: b.date < todayKey() ? null : b.start, dur: b.dur, oldDate: b.date, oldTime: b.start, oldDur: b.dur }; S.sheet = null; go("resched"); break; }
+    case "rs-open": { const b = findBooking(v); if (!b || !canEditBooking(b)) break; const sel0 = (b.services || []).filter(svcById);
+      S.rs = { id: b.id, date: b.date < todayKey() ? todayKey() : b.date, time: b.date < todayKey() ? null : b.start, dur: b.dur, oldDate: b.date, oldTime: b.start, oldDur: b.dur, sel: sel0.slice(), oldSel: sel0.join() }; S.sheet = null; go("resched"); break; }
     case "rs-time": if (S.rs) { S.rs.time = +v; render(true); } break;
+    case "rs-svc": if (S.rs) { const R = S.rs; R.sel = R.sel.includes(v) ? R.sel.filter(x => x !== v) : R.sel.concat(v);
+      const d = R.sel.filter(svcById).reduce((n, id) => n + svcById(id).dur, 0); if (d) R.dur = d; render(true); } break;
     case "rs-save": saveResched(); break;
     case "push-on": staffPushOn(true).then(ok => { if (ok) toast("Уведомления включены"); }); break;
     case "push-off": staffPushOff().then(() => toast("Уведомления выключены на этом телефоне")); break;
