@@ -606,7 +606,9 @@ function vClient() {
   </div>
   <div class="card stack"><b>Заметка <span class="tiny muted" style="font-weight:600">(видят только мастера и владелец)</span></b>
     <textarea id="clNote" rows="3" maxlength="1000" placeholder="Например: любимые оттенки, длина, аллергии">${esc(S.clNote != null ? S.clNote : c.note)}</textarea>
-    <div class="btns">${fld("clName", "Имя и фамилия", S.clName != null ? S.clName : c.name, 'maxlength="60" autocomplete="off"')}${fld("clPhone", "Телефон", S.clPhone != null ? S.clPhone : c.phone, 'type="tel" maxlength="25" autocomplete="off"')}</div>
+    ${(() => { const parts = c.name.trim().split(/\s+/), fn = parts.shift() || "", sn = parts.join(" ");
+      return `<div class="grid2">${fld("clName", "Имя", S.clName != null ? S.clName : fn, 'maxlength="30" autocomplete="off"')}${fld("clSurname", "Фамилия", S.clSurname != null ? S.clSurname : sn, 'maxlength="30" autocomplete="off"')}</div>`; })()}
+    ${fld("clPhone", "Телефон", S.clPhone != null ? S.clPhone : c.phone, 'type="tel" inputmode="tel" maxlength="25" autocomplete="off"')}
     <button class="btn sm ghost" data-act="cl-save">Сохранить</button></div>
   <h2 class="h2">История визитов</h2>
   ${hist.length ? `<div class="card" style="padding:0">${hist.map((b, i) => { const fut = b.status !== "cancelled" && (b.date > todayKey() || (b.date === todayKey() && b.start + b.dur > nowMin()));
@@ -1933,11 +1935,13 @@ document.addEventListener("click", async e => {
     case "adm-add": addAdmin(); break;
     case "adm-arm": S.armed = "adm:" + v; render(true); break;
     case "adm-del": try { await deleteDoc(doc(db, "admins", v)); toast("Права администратора убраны"); } catch (err) { toast(errText(err)); } S.armed = null; render(true); break;
-    case "cl-open": S.clKey = v; S.clNote = S.clName = S.clPhone = null; go("client"); break;
+    case "cl-open": S.clKey = v; S.clNote = S.clName = S.clSurname = S.clPhone = null; go("client"); break;
     case "cl-new": S.cn = null; S.cnErr = ""; go("clientNew"); break;
     case "cl-save": { const c = clientList().find(x => x.key === S.clKey); if (!c) break;
-      try { await saveClientCard(c.key, { name: (S.clName != null ? S.clName : c.name).trim().slice(0, 60) || c.name, phone: (S.clPhone != null ? S.clPhone : c.phone).trim().slice(0, 25), note: (S.clNote != null ? S.clNote : c.note).trim().slice(0, 1000) });
-        S.clNote = S.clName = S.clPhone = null; toast("Сохранено"); } catch (err) { toast(errText(err)); } render(true); break; }
+      const parts = c.name.trim().split(/\s+/), fn0 = parts.shift() || "", sn0 = parts.join(" ");
+      const nm = fullName(S.clName != null ? S.clName : fn0, S.clSurname != null ? S.clSurname : sn0);
+      try { await saveClientCard(c.key, { name: nm || c.name, phone: (S.clPhone != null ? S.clPhone : c.phone).trim().slice(0, 25), note: (S.clNote != null ? S.clNote : c.note).trim().slice(0, 1000) });
+        S.clNote = S.clName = S.clSurname = S.clPhone = null; toast("Сохранено"); } catch (err) { toast(errText(err)); } render(true); break; }
     case "cn-save": { const N = S.cn; const nm = fullName(N.name, N.surname); S.cnErr = "";
       if (!N.name.trim()) { S.cnErr = "Укажите имя"; render(true); break; }
       const key = clientKey(nm, N.phone); S.saving = true; render(true);
@@ -2039,6 +2043,7 @@ document.addEventListener("input", e => {
   else if (t.id === "clQ") { S.clQ = t.value; const box = document.getElementById("clList"); if (box) box.innerHTML = clientRows(S.clQ.trim().length >= 2 ? matchClients(S.clQ) : clientList()); }
   else if (t.id === "clNote") S.clNote = t.value;
   else if (t.id === "clName") S.clName = t.value;
+  else if (t.id === "clSurname") S.clSurname = t.value;
   else if (t.id === "clPhone") S.clPhone = t.value;
   else if (S.cn && ["cnName", "cnSurname", "cnPhone", "cnNote"].includes(t.id)) S.cn[{ cnName: "name", cnSurname: "surname", cnPhone: "phone", cnNote: "note" }[t.id]] = t.value;
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
