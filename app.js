@@ -59,6 +59,7 @@ const lsk = k => SID ? k + "@" + SID : k;   // per-salon phone storage (my booki
 const salonUrl = (sid, owner) => location.origin + location.pathname + "?s=" + (sid || "main") + (owner ? "#owner" : "");
 
 const ICON = {
+  users: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c.8-3.5 3.2-5.5 6-5.5s5.2 2 6 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M21 20c-.5-2.6-1.9-4.4-3.8-5.1"/></svg>',
   sms: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8M8 13h5"/></svg>',
   back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
   next: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
@@ -441,8 +442,13 @@ async function resolveRole(user) {
   roleChecking = false;
   renderSoon(true);
 }
+function watchClientDocs() {
+  CL_BOOK = null;
+  unsubOwner.push(onSnapshot(SC("clients"), snap => { const m = {}; snap.docs.forEach(d => { m[d.id] = d.data(); }); CLIENT_DOCS = m; renderSoon(true); }, () => {}));
+}
 function startOwnerWatch() {
   const denied = () => { ownerDenied = true; renderSoon(true); };
+  watchClientDocs();
   staffPushRefresh();
   if (isAdmin()) {
     unsubOwner.push(onSnapshot(collection(db, "salons"), snap => { SALONS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.created || 0) - (b.created || 0)); renderSoon(true); }, () => {}));
@@ -474,6 +480,7 @@ function startOwnerWatch() {
 // A master only ever loads their own bookings.
 function startMasterWatch() {
   staffPushRefresh();
+  watchClientDocs();
   unsubOwner.push(onSnapshot(query(SC("bookings"), where("artist", "==", MY_ARTIST)), snap => {
     const before = new Set(NEWB.map(b => b.id));
     MASTER_ALL = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
@@ -517,6 +524,109 @@ async function maybeCreateDefaults() {
   creatingDefaults = false;
   renderSoon(true);
 }
+
+/* ================= client base (staff) ================= */
+// Built from the salon's bookings (visits, money, last visit) plus saved client cards (notes, clients added by hand).
+let CLIENT_DOCS = {}, CL_BOOK = null, clLoading = false;
+const phoneKey = p => { const d = String(p || "").replace(/\D/g, ""); return d.length >= 10 ? d.slice(-10) : d; };
+const clientKey = (name, phone) => phoneKey(phone) ? "p" + phoneKey(phone) : "n" + String(name || "").trim().toLowerCase().replace(/[^a-zа-яё0-9]+/g, "-").slice(0, 40);
+async function loadClientBookings(force) {
+  if (clLoading || (CL_BOOK && !force)) return;
+  clLoading = true;
+  try {
+    if (ROLE === "master" && !shareView()) CL_BOOK = MASTER_ALL.slice();
+    else { const q = await getDocs(SC("bookings")); CL_BOOK = q.docs.map(d => Object.assign({ id: d.id }, d.data())); }
+  } catch (e) { CL_BOOK = ROLE === "master" ? MASTER_ALL.slice() : []; }
+  clLoading = false; renderSoon(true);
+}
+function clientList() {
+  const m = {}, now = todayKey();
+  const add = (key, name, phone) => (m[key] = m[key] || { key, name: name || "Клиент", phone: phone || "", note: "", visits: 0, spent: 0, cancels: 0, last: "", next: "", artists: {}, list: [] });
+  (CL_BOOK || []).forEach(b => {
+    const c = add(clientKey(b.name, b.phone), b.name, b.phone);
+    if ((b.created || 0) >= (c._t || 0)) { c.name = b.name || c.name; if (b.phone) c.phone = b.phone; c._t = b.created || 0; }
+    c.list.push(b);
+    if (b.status === "cancelled") c.cancels++;
+    else if (b.date < now || (b.date === now && b.start + b.dur <= nowMin())) { c.visits++; c.spent += Number(b.total || 0); if (b.date > c.last) c.last = b.date; c.artists[b.artist] = (c.artists[b.artist] || 0) + 1; }
+    else if (!c.next || b.date < c.next) c.next = b.date;
+  });
+  Object.keys(CLIENT_DOCS).forEach(k => { const d = CLIENT_DOCS[k], c = add(k, d.name, d.phone); if (d.name) c.name = d.name; if (d.phone) c.phone = d.phone; c.note = d.note || ""; c.saved = true; });
+  return Object.values(m).sort((a, b) => ((b.next || b.last) || "").localeCompare((a.next || a.last) || "") || a.name.localeCompare(b.name));
+}
+function matchClients(q, limit) {
+  q = String(q || "").trim().toLowerCase(); const d = q.replace(/\D/g, "");
+  if (q.length < 2) return [];
+  return clientList().filter(c => c.name.toLowerCase().includes(q) || (d.length >= 3 && phoneKey(c.phone).includes(d))).slice(0, limit || 50);
+}
+const visitsTxt = n => n + " " + plural(n, ["визит", "визита", "визитов"]);
+function vClients() {
+  if (!CL_BOOK) loadClientBookings();
+  const q = S.clQ || "", all = clientList(), list = q.trim().length >= 2 ? matchClients(q) : all;
+  return `<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 class="h1" style="font-size:26px">Клиенты</h1><span class="small muted">${all.length} в базе</span></div>
+  <label class="search"><span aria-hidden="true">⌕</span><input id="clQ" type="search" inputmode="search" autocomplete="off" placeholder="Имя или телефон" value="${esc(q)}" aria-label="Поиск клиента"></label>
+  <button class="btn ghost" data-act="cl-new">${ICON.plus}Новый клиент</button>
+  <div id="clList">${clientRows(list)}</div>
+  <p class="tiny muted">Клиент попадает в базу автоматически после записи — онлайн или вручную. ${ROLE === "master" && !shareView() ? "Вы видите своих клиентов." : ""}</p>`;
+}
+function clientRows(list) {
+  if (!CL_BOOK) return loading();
+  if (!list.length) return `<div class="empty">Никого не нашли.</div>`;
+  return `<div class="card" style="padding:0">${list.slice(0, 200).map((c, i) => `<button class="cl-row" data-act="cl-open" data-v="${esc(c.key)}" style="${i ? "" : "border-top:0"}">
+      <span class="biglogo" style="width:40px;height:40px;border-radius:20px;font-size:16px">${esc(c.name.charAt(0).toUpperCase())}</span>
+      <span class="stack" style="gap:1px;flex:1;min-width:0;text-align:left"><b>${esc(c.name)}</b><span class="tiny muted">${esc(c.phone || "без телефона")}</span></span>
+      <span class="stack" style="gap:1px;align-items:flex-end"><b class="small">${visitsTxt(c.visits)}</b><span class="tiny muted">${c.next ? "запись " + esc(shortDate(c.next)) : c.last ? "посл. " + esc(shortDate(c.last)) : ""}</span></span></button>`).join("")}</div>`;
+}
+function vClient() {
+  if (!CL_BOOK) loadClientBookings();
+  const c = clientList().find(x => x.key === S.clKey);
+  if (!c) return `${header("", "Клиент", "clients")}${CL_BOOK ? `<div class="empty">Клиент не найден.</div>` : loading()}`;
+  const fav = Object.keys(c.artists).sort((a, b) => c.artists[b] - c.artists[a])[0];
+  const hist = c.list.slice().sort((a, b) => (b.date + hm(b.start)).localeCompare(a.date + hm(a.start)));
+  const msgB = { name: c.name, phone: c.phone };
+  return `${header("", c.name, "clients")}
+  <div class="stat3"><div class="card"><span class="tiny muted">Визитов</span><b>${c.visits}</b></div><div class="card"><span class="tiny muted">Потрачено</span><b>${rub(c.spent)}</b></div><div class="card"><span class="tiny muted">Отмены</span><b>${c.cancels}</b></div></div>
+  <div class="card stack">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:16px;user-select:all">${esc(c.phone || "Телефон не указан")}</b>${fav ? `<span class="tiny muted">обычно к мастеру ${esc(artistName(fav))}</span>` : ""}</div>
+    ${c.phone ? `<div class="msgbtns"><a class="btn sm ghost" href="tel:${esc(c.phone.replace(/[^\d+]/g, ""))}">${ICON.phone}Звонок</a>
+      <a class="btn sm ghost msg-wa" href="${esc(waLink(c.phone, ""))}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a>
+      <a class="btn sm ghost msg-sms" href="${esc(smsLink(c.phone, ""))}">${ICON.sms}SMS</a></div>` : ""}
+  </div>
+  <div class="card stack"><b>Заметка <span class="tiny muted" style="font-weight:600">(видят только мастера и владелец)</span></b>
+    <textarea id="clNote" rows="3" maxlength="1000" placeholder="Например: любимые оттенки, длина, аллергии">${esc(S.clNote != null ? S.clNote : c.note)}</textarea>
+    <div class="btns">${fld("clName", "Имя и фамилия", S.clName != null ? S.clName : c.name, 'maxlength="60" autocomplete="off"')}${fld("clPhone", "Телефон", S.clPhone != null ? S.clPhone : c.phone, 'type="tel" maxlength="25" autocomplete="off"')}</div>
+    <button class="btn sm ghost" data-act="cl-save">Сохранить</button></div>
+  <h2 class="h2">История визитов</h2>
+  ${hist.length ? `<div class="card" style="padding:0">${hist.map((b, i) => { const fut = b.status !== "cancelled" && (b.date > todayKey() || (b.date === todayKey() && b.start + b.dur > nowMin()));
+    return `<div class="cl-hist" style="${i ? "" : "border-top:0"}"><span class="stack" style="align-items:center;width:46px"><b>${new Date(b.date + "T12:00").getDate()}</b><span class="tiny muted">${MONG[new Date(b.date + "T12:00").getMonth()].slice(0, 3)}</span></span>
+      <span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small">${esc((b.serviceNames || []).join(", "))}</b><span class="tiny" style="color:${b.status === "cancelled" ? "var(--bad)" : fut ? "var(--accent)" : "var(--muted)"}">${b.status === "cancelled" ? "Отменена" : (fut ? "Запланирован · " : "") + hm(b.start) + " · " + esc(artistName(b.artist))}</span></span>
+      <b class="small">${rub(b.total)}</b></div>`; }).join("")}</div>` : `<div class="empty">Визитов пока нет.</div>`}
+  <button class="btn" data-act="cl-book" data-v="${esc(c.key)}">Записать ${c.visits ? "снова" : "клиента"}</button>`;
+}
+function vClientNew() {
+  const N = S.cn || (S.cn = { name: "", surname: "", phone: "", note: "" });
+  return `${header("", "Новый клиент", "clients")}
+  <div class="card stack">
+    ${fld("cnName", "Имя *", N.name, 'maxlength="30" autocomplete="off"')}
+    ${fld("cnSurname", "Фамилия (необязательно)", N.surname, 'maxlength="30" autocomplete="off"')}
+    ${fld("cnPhone", "Телефон", N.phone, 'type="tel" inputmode="tel" maxlength="25" autocomplete="off" placeholder="+7 900 000-00-00"')}
+    <label class="field" for="cnNote">Заметка (необязательно)<textarea id="cnNote" rows="3" maxlength="1000">${esc(N.note)}</textarea></label>
+  </div>
+  ${S.cnErr ? `<div class="err-box" role="alert">${esc(S.cnErr)}</div>` : ""}
+  <button class="btn" data-act="cn-save" ${S.saving ? "disabled" : ""}>Сохранить клиента</button>`;
+}
+async function saveClientCard(key, data) {
+  const id = key.slice(0, 60);
+  await setDoc(SD("clients", id), Object.assign({ name: "", phone: "", note: "", updated: Date.now() }, CLIENT_DOCS[id] || {}, data, { updated: Date.now() }));
+}
+// suggestions under the name / phone fields of «Записать клиента»
+function mbSuggest() {
+  const M = S.mb; if (!M || M.clientKey) return "";
+  const q = (M.phone || "").replace(/\D/g, "").length >= 3 ? M.phone : M.name;
+  const list = matchClients(q, 5);
+  if (!list.length) return "";
+  return `<div class="sugg"><span class="tiny muted" style="padding:8px 12px 0;display:block;font-weight:600">Из базы клиентов:</span>${list.map(c => `<button class="sugg-row" data-act="mb-pick" data-v="${esc(c.key)}"><span class="stack" style="gap:1px;text-align:left"><b class="small">${esc(c.name)}</b><span class="tiny muted">${esc(c.phone || "без телефона")} · ${visitsTxt(c.visits)}</span></span><b class="small" style="color:var(--accent)">Выбрать</b></button>`).join("")}</div>`;
+}
+function refreshMbSuggest() { const e = document.getElementById("mbSugg"); if (e) e.innerHTML = mbSuggest(); }
 
 /* ================= notifications: push (app closed) + chime (app open) ================= */
 const PUSH_URL = "https://nailbook-push.gienkidzas.workers.dev";
@@ -1252,10 +1362,12 @@ function vManual() {
       : `<div class="small muted">На этот день нет свободного времени${chair ? " (или занято педикюрное кресло)" : ""}.</div>`}
   </div>
   <div class="card stack"><b>Клиент</b>
-    <label class="field" for="mbName">Имя *<input id="mbName" maxlength="30" autocomplete="off" value="${esc(M.name)}" placeholder="Имя клиента"></label>
+    ${M.clientKey ? `<div class="picked"><span class="stack" style="gap:2px"><b>${esc(M.name)}${M.phone ? " · " + esc(M.phone) : ""}</b>${(() => { const c = clientList().find(x => x.key === M.clientKey); return c ? `<span class="tiny">${visitsTxt(c.visits)}${c.note ? " · " + esc(c.note) : ""}</span>` : ""; })()}</span><button class="linkbtn" data-act="mb-unpick">Другой</button></div>` : `
+    <label class="field" for="mbName">Имя * <span class="tiny muted" style="font-weight:500">— или начните вводить, найдём в базе</span><input id="mbName" maxlength="60" autocomplete="off" value="${esc(M.name)}" placeholder="Имя клиента"></label>
+    <div id="mbSugg">${mbSuggest()}</div>`}
     ${S.tried && !M.name.trim() ? `<div class="err">Укажите имя клиента</div>` : ""}
-    <label class="field" for="mbSurname">Фамилия (необязательно)<input id="mbSurname" maxlength="30" autocomplete="off" value="${esc(M.surname || "")}" placeholder="Фамилия"></label>
-    <label class="field" for="mbPhone">Телефон (необязательно)<input id="mbPhone" type="tel" inputmode="tel" maxlength="25" autocomplete="off" value="${esc(M.phone)}" placeholder="+7 900 000 00 00"></label>
+    ${M.clientKey ? "" : `<label class="field" for="mbSurname">Фамилия (необязательно)<input id="mbSurname" maxlength="30" autocomplete="off" value="${esc(M.surname || "")}" placeholder="Фамилия"></label>`}
+    ${M.clientKey ? "" : `<label class="field" for="mbPhone">Телефон (необязательно)<input id="mbPhone" type="tel" inputmode="tel" maxlength="25" autocomplete="off" value="${esc(M.phone)}" placeholder="+7 900 000 00 00"></label>`}
     <label class="field" for="mbNote">Комментарий (необязательно)<input id="mbNote" maxlength="250" autocomplete="off" value="${esc(M.note)}" placeholder="Например: записалась по телефону"></label>
   </div>`;
 }
@@ -1595,8 +1707,8 @@ function vReportMaster() {
 
 function ownerTabs() {
   const n = PENDING.length + NEWB.filter(b => b.status === "confirmed" && (b.created || 0) > inboxSeen).length;
-  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
-  return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${ROLE === "owner" ? t("report", ICON.chart, "Отчёт") : ""}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
+  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") || (v === "clients" && (S.view === "client" || S.view === "clientNew")) ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${t("clients", ICON.users, "Клиенты")}${ROLE === "owner" ? t("report", ICON.chart, "Отчёт") : ""}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
 }
 function saveBar() {
   if (!S.dirty) return "";
@@ -1694,6 +1806,9 @@ function render(keepScroll) {
         case "billing": html = isAdmin() ? vBilling() : vJournal(); break;
         case "sub": html = ROLE === "owner" ? vSub() : vJournal(); break;
         case "notif": html = vNotif(); break;
+        case "clients": html = vClients(); break;
+        case "client": html = vClient(); break;
+        case "clientNew": html = vClientNew(); break;
         case "tpl": html = ROLE === "owner" ? vTpl() : vJournal(); break;
         case "resched": html = S.rs ? vResched() : vJournal(); break;
         case "inbox": html = vInbox(); break;
@@ -1766,6 +1881,21 @@ document.addEventListener("click", async e => {
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
     case "close": S.sheet = null; S.armed = null; render(true); break;
+    case "cl-open": S.clKey = v; S.clNote = S.clName = S.clPhone = null; go("client"); break;
+    case "cl-new": S.cn = null; S.cnErr = ""; go("clientNew"); break;
+    case "cl-save": { const c = clientList().find(x => x.key === S.clKey); if (!c) break;
+      try { await saveClientCard(c.key, { name: (S.clName != null ? S.clName : c.name).trim().slice(0, 60) || c.name, phone: (S.clPhone != null ? S.clPhone : c.phone).trim().slice(0, 25), note: (S.clNote != null ? S.clNote : c.note).trim().slice(0, 1000) });
+        S.clNote = S.clName = S.clPhone = null; toast("Сохранено"); } catch (err) { toast(errText(err)); } render(true); break; }
+    case "cn-save": { const N = S.cn; const nm = fullName(N.name, N.surname); S.cnErr = "";
+      if (!N.name.trim()) { S.cnErr = "Укажите имя"; render(true); break; }
+      const key = clientKey(nm, N.phone); S.saving = true; render(true);
+      try { await saveClientCard(key, { name: nm, phone: N.phone.trim().slice(0, 25), note: N.note.trim().slice(0, 1000), created: Date.now() }); toast("Клиент сохранён"); S.saving = false; S.cn = null; S.clKey = key; go("client"); }
+      catch (err) { S.saving = false; S.cnErr = errText(err); render(true); } break; }
+    case "cl-book": { const c = clientList().find(x => x.key === v); if (!c) break;
+      const fav = Object.keys(c.artists).sort((a, b) => c.artists[b] - c.artists[a])[0];
+      S.mb = { artist: ROLE === "master" ? MY_ARTIST : (fav && SET.artists.some(a => a.id === fav) ? fav : SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: todayKey(), time: null, name: c.name, surname: "", phone: c.phone, note: "", clientKey: c.key }; S.tried = false; go("manual"); break; }
+    case "mb-pick": { const c = clientList().find(x => x.key === v); if (!c || !S.mb) break; Object.assign(S.mb, { name: c.name, surname: "", phone: c.phone, clientKey: c.key }); render(true); break; }
+    case "mb-unpick": if (S.mb) { Object.assign(S.mb, { name: "", surname: "", phone: "", clientKey: null }); render(true); } break;
     case "d-toggle": if (S.draft) { S.draft[v] = !S.draft[v]; if (v === "shareView" && !S.draft.shareView) S.draft.shareEdit = false; S.dirty = true; S.draftErr = ""; render(true); } break;
     case "tpl-tab": { const e = document.getElementById("tplText"); if (e && S.tplDraft) S.tplDraft[S.tplTab || "ok"] = e.value; S.tplTab = v; render(true); break; }
     case "tpl-ins": { const e = document.getElementById("tplText"); if (!e || !S.tplDraft) break; const a = e.selectionStart ?? e.value.length, z = e.selectionEnd ?? a;
@@ -1800,12 +1930,12 @@ document.addEventListener("click", async e => {
     case "bi-save": saveBilling(); break;
     case "sub-n": S.subN = +v; render(true); break;
     case "sub-claim": claimPayment(); break;
-    case "mb-new": S.mb = { artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: S.jDate < todayKey() ? todayKey() : S.jDate, time: null, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break;
+    case "mb-new": loadClientBookings(); S.mb = { artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: S.jDate < todayKey() ? todayKey() : S.jDate, time: null, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break;
     case "mb-artist": if (S.mb) { S.mb.artist = v; if (!S.mb.picked) S.mb.time = null; render(true); } break;
     case "mb-svc": if (S.mb) { S.mb.sel = S.mb.sel.includes(v) ? S.mb.sel.filter(x => x !== v) : S.mb.sel.concat(v); if (!S.mb.picked) S.mb.time = null; render(true); } break;
     case "mb-at": { const [aid, t] = v.split("|");
       if (ROLE === "master" && aid !== MY_ARTIST) break;
-      S.mb = { artist: aid, sel: [], date: S.jDate, time: +t, picked: true, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break; }
+      loadClientBookings(); S.mb = { artist: aid, sel: [], date: S.jDate, time: +t, picked: true, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break; }
     case "mb-time": if (S.mb) { S.mb.time = +v; S.mb.picked = false; render(true); } break;
     case "mb-save": saveManual(); break;
     case "jday": S.jDate = addDays(S.jDate, Number(v)); watchJday(); render(true); break;
@@ -1853,6 +1983,11 @@ document.addEventListener("input", e => {
   if (t.id === "fName") { S.form.name = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fSurname") { S.form.surname = t.value; lsSet("nb-form", S.form); }
   else if (S.mb && t.id === "mbSurname") S.mb.surname = t.value;
+  else if (t.id === "clQ") { S.clQ = t.value; const box = document.getElementById("clList"); if (box) box.innerHTML = clientRows(S.clQ.trim().length >= 2 ? matchClients(S.clQ) : clientList()); }
+  else if (t.id === "clNote") S.clNote = t.value;
+  else if (t.id === "clName") S.clName = t.value;
+  else if (t.id === "clPhone") S.clPhone = t.value;
+  else if (S.cn && ["cnName", "cnSurname", "cnPhone", "cnNote"].includes(t.id)) S.cn[{ cnName: "name", cnSurname: "surname", cnPhone: "phone", cnNote: "note" }[t.id]] = t.value;
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fNote") S.form.note = t.value;
   else if (t.id === "revText" && S.revDraft) S.revDraft.text = t.value;
@@ -1870,8 +2005,8 @@ document.addEventListener("input", e => {
   else if (S.bill && t.id === "biPhone") S.bill.phone = t.value;
   else if (S.bill && t.id === "biBank") S.bill.bank = t.value;
   else if (S.bill && t.id === "biRecip") S.bill.recipient = t.value;
-  else if (S.mb && t.id === "mbName") S.mb.name = t.value;
-  else if (S.mb && t.id === "mbPhone") S.mb.phone = t.value;
+  else if (S.mb && t.id === "mbName") { S.mb.name = t.value; refreshMbSuggest(); }
+  else if (S.mb && t.id === "mbPhone") { S.mb.phone = t.value; refreshMbSuggest(); }
   else if (S.mb && t.id === "mbNote") S.mb.note = t.value;
   else if (t.id === "revEditText" && S.revEdit) S.revEdit.text = t.value;
   else if (t.id === "lEmail") S.login.email = t.value;

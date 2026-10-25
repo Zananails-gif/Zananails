@@ -101,6 +101,15 @@ service cloud.firestore {
       allow delete: if isOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
     }
 
+    // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера
+    match /clients/{id} {
+      allow read, delete: if isOwner() || myArtist() != '';
+      allow create, update: if (isOwner() || myArtist() != '')
+        && request.resource.data.name is string && request.resource.data.name.size() <= 60
+        && request.resource.data.get('phone', '') is string && request.resource.data.get('phone', '').size() <= 25
+        && request.resource.data.get('note', '') is string && request.resource.data.get('note', '').size() <= 1000;
+    }
+
     // Фото работ: видят все; добавляет владелец или мастер (только свои); скрывает владелец
     match /works/{id} {
       allow read: if true;
@@ -266,6 +275,15 @@ service cloud.firestore {
           && request.resource.data.artist == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.artist
           && (resource.data.artist == sArtist() || (get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('shareEdit', false) == true)));
         allow delete: if sOwner() || getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status == 'cancelled';
+      }
+
+      // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера
+      match /clients/{id} {
+        allow read, delete: if sOwner() || sArtist() != '';
+        allow create, update: if (sOwner() || sArtist() != '')
+          && request.resource.data.name is string && request.resource.data.name.size() <= 60
+          && request.resource.data.get('phone', '') is string && request.resource.data.get('phone', '').size() <= 25
+          && request.resource.data.get('note', '') is string && request.resource.data.get('note', '').size() <= 1000;
       }
 
       // Фото работ: видят все; добавляет владелец или мастер (только свои); скрывает владелец

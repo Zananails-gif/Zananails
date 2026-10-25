@@ -259,3 +259,12 @@ textarea{font:inherit;font-size:16px;border:1px solid var(--line2);border-radius
 .sw-row[aria-checked="true"] .sw i{left:23px}
 .bubble{align-self:flex-start;max-width:320px;background:#DCF8C6;color:#1F1A1C;border-radius:14px 14px 14px 4px;padding:10px 12px;font-size:14px;line-height:1.4;white-space:pre-wrap}
 .chips-wrap{flex-wrap:wrap;overflow:visible}
+/* client base */
+.search{position:relative;display:block}
+.search span{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:20px}
+.search input{width:100%;box-sizing:border-box;height:48px;border-radius:24px;border:1px solid var(--line2);background:var(--surface);padding:0 16px 0 42px;font:inherit;font-size:16px;color:var(--fg)}
+.cl-row{display:flex;gap:12px;align-items:center;width:100%;padding:10px 14px;border:0;border-top:1px solid var(--line);background:none;font:inherit;color:inherit;cursor:pointer}
+.cl-hist{display:flex;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+.sugg{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);margin-top:-4px}
+.sugg-row{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;padding:10px 12px;border:0;border-top:1px solid var(--line);background:none;font:inherit;color:inherit;cursor:pointer;min-height:48px}
+.picked{display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--ok-soft);color:var(--ok-text);border-radius:12px;padding:12px}
