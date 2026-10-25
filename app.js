@@ -341,7 +341,9 @@ function watchMine() {
   ids.forEach(id => {
     if (unsubMy[id]) return;
     unsubMy[id] = onSnapshot(SD("bookings", id), snap => {
+      const before = MY[id];
       MY[id] = snap.exists() ? Object.assign({ id }, snap.data()) : null;
+      if (before && MY[id] && (before.status !== MY[id].status || before.artist !== MY[id].artist) && S.mode !== "owner") chime();
       renderSoon(true);
     }, () => { MY[id] = null; });
   });
@@ -361,7 +363,7 @@ function stopWatches() {
 function notifyNew(before) {
   if (pendingLoaded) {
     const fresh = NEWB.filter(b => !before.has(b.id) && b.status !== "cancelled");
-    if (fresh.length) { toast("Новая запись: " + fresh[0].name); try { navigator.vibrate && navigator.vibrate(200); } catch (e) {} }
+    if (fresh.length) { toast("Новая запись: " + fresh[0].name); chime(); }
   }
   pendingLoaded = true;
 }
@@ -396,6 +398,7 @@ async function resolveRole(user) {
 }
 function startOwnerWatch() {
   const denied = () => { ownerDenied = true; renderSoon(true); };
+  staffPushRefresh();
   if (isAdmin()) {
     unsubOwner.push(onSnapshot(collection(db, "salons"), snap => { SALONS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.created || 0) - (b.created || 0)); renderSoon(true); }, () => {}));
     unsubOwner.push(onSnapshot(collection(db, "salonsPrivate"), snap => { const m = {}; snap.docs.forEach(d => { m[d.id] = d.data().ownerEmail || ""; }); OWNERS = m; renderSoon(true); }, () => {}));
@@ -425,6 +428,7 @@ function startOwnerWatch() {
 }
 // A master only ever loads their own bookings.
 function startMasterWatch() {
+  staffPushRefresh();
   unsubOwner.push(onSnapshot(query(SC("bookings"), where("artist", "==", MY_ARTIST)), snap => {
     const before = new Set(NEWB.map(b => b.id));
     MASTER_ALL = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
@@ -465,6 +469,108 @@ async function maybeCreateDefaults() {
   catch (e) { if (e && e.code === "permission-denied") ownerDenied = true; }
   creatingDefaults = false;
   renderSoon(true);
+}
+
+/* ================= notifications: push (app closed) + chime (app open) ================= */
+const PUSH_URL = "https://nailbook-push.gienkidzas.workers.dev";
+const VAPID_PUBLIC = "BLWFGbpnQc4v8oqU6RKmRtGnij9GSw62RHgJKYH6yMMHJECykAyPYM7IWxydXAMAnvnasGh7tU-eGFNAsdsQvoc";
+const SALON_KEY = SID || "main";
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const notifPrefs = () => Object.assign({ nb: true, cn: true, am: true, snd: true }, lsGet("nb-notif-prefs", {}));
+let pushSub = null, pushReady = false;
+function pushPost(path, body) {
+  return fetch(PUSH_URL + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ salon: SALON_KEY }, body)), keepalive: true })
+    .then(r => r.json().catch(() => ({}))).catch(() => ({}));
+}
+function b64uToBytes(s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+async function getPushSub(create) {
+  if (!pushSupported()) return null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub && create) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(VAPID_PUBLIC) });
+    return sub ? JSON.parse(JSON.stringify(sub)) : null;
+  } catch (e) { return null; }
+}
+// staff: register this phone (with the sign-in token, so only real staff get booking details)
+async function staffPushOn(ask) {
+  if (!pushSupported() || !USER) return false;
+  if (ask && Notification.permission !== "granted") { const p = await Notification.requestPermission(); if (p !== "granted") { toast("Уведомления запрещены в настройках телефона"); render(true); return false; } }
+  if (Notification.permission !== "granted") return false;
+  const sub = await getPushSub(true); if (!sub) { toast("Не удалось включить уведомления на этом телефоне"); return false; }
+  const token = await USER.getIdToken().catch(() => "");
+  const r = await pushPost("/sub/staff", { token, sub, prefs: notifPrefs() });
+  pushSub = sub; pushReady = !!r.ok; lsSet(lsk("nb-push-on"), pushReady); render(true);
+  return pushReady;
+}
+async function staffPushOff() {
+  const sub = pushSub || await getPushSub(false);
+  if (sub) await pushPost("/sub/staff/off", { endpoint: sub.endpoint });
+  pushReady = false; lsSet(lsk("nb-push-on"), false); render(true);
+}
+// staff: quietly refresh on each start (the phone may renew its subscription)
+async function staffPushRefresh() {
+  if (!pushSupported() || Notification.permission !== "granted" || !lsGet(lsk("nb-push-on"), false)) return;
+  await staffPushOn(false);
+}
+// client: remind me about this booking
+async function clientRemind(id, ask) {
+  if (!pushSupported()) return false;
+  if (ask && Notification.permission !== "granted") { const p = await Notification.requestPermission(); if (p !== "granted") { lsSet(lsk("nb-remind-no"), true); render(true); return false; } }
+  if (Notification.permission !== "granted") return false;
+  const sub = await getPushSub(true); if (!sub) return false;
+  const r = await pushPost("/sub/client", { id, sub });
+  if (r.ok) { const ids = lsGet(lsk("nb-remind"), []); if (!ids.includes(id)) ids.push(id); lsSet(lsk("nb-remind"), ids.slice(-30)); }
+  render(true); return !!r.ok;
+}
+const pushEvent = (id, type, by) => pushPost("/event", { id, type, by });
+// short chime for the open app (phones allow sound only after the first tap)
+let audioCtx = null;
+document.addEventListener("pointerdown", () => { try { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === "suspended") audioCtx.resume(); } catch (e) {} }, { passive: true });
+function chime() {
+  if (!notifPrefs().snd || !audioCtx) return;
+  try {
+    const t = audioCtx.currentTime;
+    [[880, 0], [1320, 0.16]].forEach(([f, d]) => { const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = "sine"; o.frequency.value = f; g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.35);
+      o.connect(g); g.connect(audioCtx.destination); o.start(t + d); o.stop(t + d + 0.4); });
+  } catch (e) {}
+  try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch (e) {}
+}
+function notifCard() {
+  if (!pushSupported() || pushReady || lsGet(lsk("nb-push-on"), false) || Notification.permission === "denied") return "";
+  if (lsGet("nb-push-later", 0) > Date.now()) return "";
+  return `<div class="card stack notif-card"><div class="row" style="gap:12px">${'<div class="notif-ico">' + ICON.bell + '</div>'}
+      <div class="stack" style="gap:2px"><b>Не пропускайте записи</b><span class="small muted">Уведомление со звуком, даже когда приложение закрыто</span></div></div>
+    <div class="btns"><button class="btn sm ghost" data-act="push-later">Позже</button><button class="btn sm" data-act="push-on">Включить</button></div></div>`;
+}
+function vNotif() {
+  const P = notifPrefs(), sup = pushSupported(), denied = sup && Notification.permission === "denied", on = pushReady || lsGet(lsk("nb-push-on"), false);
+  const row = (k, t, sub) => `<button class="sw-row" role="switch" aria-checked="${!!P[k]}" data-act="np" data-v="${k}"><span class="stack" style="gap:2px;text-align:left"><b>${t}</b><span class="tiny muted">${sub}</span></span><span class="sw"><i></i></span></button>`;
+  return `${header("", "Уведомления", "settings")}
+  ${!sup ? `<div class="note">${ICON.info}<span>${isIOS() ? "На iPhone уведомления работают, когда приложение добавлено на экран «Домой»: Safari → «Поделиться» → «На экран Домой». Затем откройте приложение с экрана и включите здесь." : "Этот браузер не поддерживает уведомления. Откройте приложение в Chrome."}</span></div>`
+    : denied ? `<div class="note">${ICON.info}<span>Уведомления запрещены в настройках телефона. Откройте настройки телефона → Приложения → Chrome (или это приложение) → Уведомления → Разрешить.</span></div>`
+    : on ? `<div class="card row notif-on">${ICON.check}<b>Включены на этом телефоне</b></div>`
+    : `<button class="btn" data-act="push-on">${ICON.bell}Включить уведомления на этом телефоне</button>`}
+  <div class="card stack" style="padding:0;gap:0">
+    ${row("nb", "Новые записи", ROLE === "master" ? "Клиент записался к вам онлайн" : "Клиент записался онлайн")}
+    ${row("cn", "Отмены", "Клиент отменил запись")}
+    ${row("am", "Утро: записи на сегодня", "В 8:00 — сколько клиентов сегодня")}
+    ${row("snd", "Звук в открытом приложении", "Сигнал и вибрация, когда приложение на экране")}
+  </div>
+  ${on && sup ? `<button class="btn ghost" data-act="push-test">Проверить — отправить тестовое уведомление</button>
+    <button class="linkbtn" style="align-self:center;color:var(--bad)" data-act="push-off">Выключить уведомления на этом телефоне</button>` : ""}
+  <p class="tiny muted">Уведомления приходят на каждый телефон, где вы вошли и нажали «Включить». ${ROLE === "master" ? "Вы получаете уведомления только о своих записях." : "Владелец получает уведомления обо всех записях."}</p>`;
+}
+function remindCard() {
+  if (!pushSupported() || lsGet(lsk("nb-remind-no"), false) || Notification.permission === "denied") return "";
+  const ids = lsGet(lsk("nb-remind"), []);
+  const next = Object.values(MY).filter(b => b && b.status !== "cancelled" && b.date >= todayKey() && !ids.includes(b.id)).sort((a, b) => (a.date + hm(a.start)).localeCompare(b.date + hm(b.start)))[0];
+  if (!next) return "";
+  if (Notification.permission === "granted") { clientRemind(next.id, false); return ""; }   // already allowed: remind automatically
+  return `<div class="card stack notif-card"><div class="row" style="gap:12px"><div class="notif-ico">${ICON.bell}</div>
+      <div class="stack" style="gap:2px"><b>Напомнить о записи?</b><span class="small muted">Уведомление накануне визита и если салон изменит запись</span></div></div>
+    <div class="btns"><button class="btn sm ghost" data-act="remind-no">Не нужно</button><button class="btn sm" data-act="remind-yes" data-v="${esc(next.id)}">Да, напомнить</button></div></div>`;
 }
 
 /* ================= salons & subscription ================= */
@@ -832,6 +938,7 @@ function vBookings() {
   const first = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
   return `<h1 class="h1" style="font-size:26px">Мои записи</h1>
   ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">${S.lastBooked === "pending" ? "Салон скоро подтвердит запись. Статус обновится здесь." : "Запись подтверждена. Ждём вас!"} Можно также отправить запись салону в WhatsApp, Telegram или по SMS — кнопки ниже.</div></div></div>` : ""}
+  ${remindCard()}
   <div class="seg" role="group" aria-label="Показать"><button data-act="btab" data-v="upcoming" aria-pressed="${S.bookTab === "upcoming"}">Предстоящие</button><button data-act="btab" data-v="past" aria-pressed="${S.bookTab === "past"}">Прошедшие и отменённые</button></div>
   <div class="list">${list.length ? list.map(bookingCard).join("") : `<div class="empty">${S.bookTab === "upcoming" ? "Предстоящих записей пока нет." : "Здесь пока ничего нет."}</div>`}</div>
   <p class="tiny muted">Записи сохраняются на этом телефоне. Если вы записывались с другого телефона, они будут видны там.</p>
@@ -1019,6 +1126,7 @@ function vNoStaff() {
 }
 function vMasterAccount() {
   return `<h1 class="h1" style="font-size:26px">Аккаунт</h1>
+  <button class="card row sub-banner neutral" data-act="go" data-v="notif"><span><b>Уведомления</b><br><span class="tiny muted">${lsGet(lsk("nb-push-on"), false) ? "Включены на этом телефоне" : "Новые записи со звуком"}</span></span><b>›</b></button>
   <div class="card stack">
     <div class="row" style="gap:14px">${avatar(MY_ARTIST, artistName(MY_ARTIST), 72)}
       <div style="min-width:0"><p class="small" style="margin:0">Вы вошли как мастер <b>${esc(artistName(MY_ARTIST))}</b></p>
@@ -1058,6 +1166,7 @@ function vJournal() {
   return `<div class="jhead"><div><div class="step">Журнал записей</div><h1 class="h1">${esc(k === todayKey() ? "Сегодня, " + shortDate(k) : longDate(k))}</h1></div>
     <div class="btns"><button class="back" data-act="jday" data-v="-1" aria-label="Предыдущий день">${ICON.back}</button><button class="back" data-act="jday" data-v="1" aria-label="Следующий день">${ICON.next}</button></div></div>
   ${subBanner()}
+  ${notifCard()}
   <button class="btn" data-act="mb-new">${ICON.plus}Записать клиента</button>
   <div class="stats"><span class="stat"><b>${day.length}</b> ${plural(day.length, ["запись", "записи", "записей"])}</span><span class="stat">Выручка: <b>${rub(revenue)}</b></span>${k !== todayKey() ? `<button class="stat" data-act="jtoday" style="font-weight:700;color:var(--accent)">К сегодняшнему дню</button>` : ""}</div>
   ${isClosed(k) ? `<div class="empty">Выходной день.</div>` : `
@@ -1192,6 +1301,7 @@ function vSettings() {
   const order = [1, 2, 3, 4, 5, 6, 0];
   return `<h1 class="h1" style="font-size:26px">Настройки салона</h1>
   ${isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="salons"><span><b>Мои салоны и оплаты</b><br><span class="tiny muted">${SALONS.length + 1} ${plural(SALONS.length + 1, ["салон", "салона", "салонов"])}${SALONS.filter(m => m.payClaim).length ? " · проверить оплат: " + SALONS.filter(m => m.payClaim).length : ""}</span></span><b>›</b></button>` : ""}
+  <button class="card row sub-banner neutral" data-act="go" data-v="notif"><span><b>Уведомления</b><br><span class="tiny muted">${lsGet(lsk("nb-push-on"), false) ? "Включены на этом телефоне" : "Новые записи со звуком"}</span></span><b>›</b></button>
   ${SID && !isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="sub"><span><b>Подписка</b><br><span class="tiny muted">${esc(subPill(META)[0])}</span></span><b>›</b></button>` : ""}
   <p class="small muted">Изменения увидят все клиенты после нажатия «Сохранить».</p>
   <div class="card stack">
@@ -1482,6 +1592,7 @@ function render(keepScroll) {
         case "salonAccess": html = isAdmin() ? vSalonAccess() : vJournal(); break;
         case "billing": html = isAdmin() ? vBilling() : vJournal(); break;
         case "sub": html = ROLE === "owner" ? vSub() : vJournal(); break;
+        case "notif": html = vNotif(); break;
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
         case "manual": html = S.mb ? vManual() : vJournal(); break;
@@ -1547,11 +1658,19 @@ document.addEventListener("click", async e => {
     case "disarm": S.armed = null; render(true); break;
     case "cancel": cancelBooking(v); break;
     case "accept":
-      try { await updateDoc(SD("bookings", v), { status: "confirmed", updated: Date.now() }); S.sheet = v; toast("Запись подтверждена. Сообщите клиенту."); }
+      try { await updateDoc(SD("bookings", v), { status: "confirmed", updated: Date.now() }); pushEvent(v, "confirm", "staff"); S.sheet = v; toast("Запись подтверждена. Сообщите клиенту."); }
       catch (err) { toast(errText(err)); }
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
     case "close": S.sheet = null; S.armed = null; render(true); break;
+    case "push-on": staffPushOn(true).then(ok => { if (ok) toast("Уведомления включены"); }); break;
+    case "push-off": staffPushOff().then(() => toast("Уведомления выключены на этом телефоне")); break;
+    case "push-later": lsSet("nb-push-later", Date.now() + 7 * 864e5); render(true); break;
+    case "push-test": { const sub = pushSub || await getPushSub(false); if (!sub) { toast("Сначала включите уведомления"); break; }
+      const r = await pushPost("/test", { endpoint: sub.endpoint }); toast(r.ok ? "Отправлено — сейчас придёт уведомление" : "Не удалось отправить. Нажмите «Включить» ещё раз."); break; }
+    case "np": { const P = notifPrefs(); P[v] = !P[v]; lsSet("nb-notif-prefs", P); render(true); if (v !== "snd" && (pushReady || lsGet(lsk("nb-push-on"), false))) staffPushOn(false); break; }
+    case "remind-yes": clientRemind(v, true).then(ok => { if (ok) toast("Напомним накануне визита"); }); break;
+    case "remind-no": lsSet(lsk("nb-remind-no"), true); render(true); break;
     case "sal-open": { const sid = v === "main" ? "" : v; location.href = salonUrl(sid, true); break; }
     case "sal-acc": S.accSid = v; S.acc = null; go("salonAccess"); break;
     case "sal-ok": confirmPayment(v, true); break;
@@ -1836,6 +1955,8 @@ async function book() {
   S.saving = false;
   const ids = lsGet(lsk("nb-my"), []); ids.unshift(id); lsSet(lsk("nb-my"), ids.slice(0, 30));
   MY[id] = Object.assign({ id }, data); watchMine();
+  pushEvent(id, "new", "client");
+  if (pushSupported() && Notification.permission === "granted") clientRemind(id, false);
   S.lastBooked = data.status; S.bookTab = "upcoming";
   Object.assign(S, { sel: [], artist: "any", date: null, time: null, tried: false, form: { name: f.name, phone: f.phone, note: "" } });
   S.view = "bookings"; S.armed = null; render(false);
@@ -1846,6 +1967,7 @@ async function cancelBooking(id) {
     batch.update(SD("bookings", id), { status: "cancelled", updated: Date.now() });
     batch.delete(SD("busy", id));
     await batch.commit();
+    pushEvent(id, "cancel", S.mode === "owner" ? "staff" : "client");
     toast("Запись отменена");
   } catch (err) { toast(errText(err)); }
   S.armed = null; render(true);
@@ -1858,6 +1980,7 @@ async function moveBooking(id, artist) {
     batch.update(SD("bookings", id), { artist, anyArtist: false, updated: Date.now() });
     batch.update(SD("busy", id), { artist });
     await batch.commit();
+    pushEvent(id, "move", "staff");
     toast("Запись передана: " + artistName(artist));
   } catch (err) { toast(errText(err)); }
   render(true);
