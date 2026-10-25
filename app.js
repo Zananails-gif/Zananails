@@ -43,6 +43,19 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
+/* ================= which salon is open ================= */
+// The main salon («Архитектура ногтей») lives at the top of the database; every other salon lives under salons/<id>.
+// A link like  ?s=lana  opens that salon. The installed phone app remembers the last salon it was opened for.
+const SID = (() => {
+  const q = new URLSearchParams(location.search).get("s");
+  const clean = v => String(v || "").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40);
+  if (q !== null) { const v = q === "main" ? "" : clean(q); lsSet("nb-salon", v); return v || null; }
+  let standalone = false; try { standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true; } catch (e) {}
+  return standalone ? (clean(lsGet("nb-salon", "")) || null) : null;
+})();
+const lsk = k => SID ? k + "@" + SID : k;   // per-salon phone storage (my bookings, seen alerts)
+const salonUrl = (sid, owner) => location.origin + location.pathname + "?s=" + (sid || "main") + (owner ? "#owner" : "");
+
 const ICON = {
   sms: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8M8 13h5"/></svg>',
   back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
@@ -106,12 +119,15 @@ function normalize(d) {
 let SET = null, setLoaded = false, setError = false;
 let BUSY = [];
 let USER = null, authReady = false, ownerDenied = false;
+// salons & subscription
+let META = null, metaLoaded = !SID, BILL = null, SALONS = [], OWNERS = {}, MAIN_NAME = "Мой салон";
+const isAdmin = () => !!USER && !!OWNER_UID && USER.uid === OWNER_UID;
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
 let PUB_WORKS = [], ALL_WORKS = [], FULL = {}, REPORT = null, NEWB = [], AVATARS = {}, REVIEWS = [];
 const NEW_WINDOW = 2 * 24 * 3600 * 1000;
-let inboxSeen = lsGet("nb-inbox-seen", 0);
+let inboxSeen = lsGet(lsk("nb-inbox-seen"), 0);
 const OWNER_UID = firebaseConfig.ownerUid || "";
 let pendingLoaded = false;
 const MY = {};
@@ -195,7 +211,7 @@ function waNumber(phone) {
   return d.length >= 8 ? d : "";
 }
 const tgUser = t => String(t || "").trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "").replace(/[^A-Za-z0-9_]/g, "");
-const appLink = () => location.origin + location.pathname;
+const appLink = () => SID ? salonUrl(SID) : location.origin + location.pathname;
 function waLink(phone, text) { const n = waNumber(phone); return n ? "https://wa.me/" + n + "?text=" + encodeURIComponent(text) : ""; }
 // SMS: opens the phone's own Messages app with the text filled in (free; sent from the phone's normal SIM)
 function smsLink(phone, text) { const n = waNumber(phone); return n ? "sms:+" + n + "?&body=" + encodeURIComponent(text) : ""; }
@@ -248,10 +264,16 @@ if (!firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("PASTE")) {
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp, firebaseConfig.databaseId || "(default)");
 const auth = getAuth(fbApp);
-const settingsRef = doc(db, "settings", "salon");
-const staffRef = doc(db, "private", "staff");   // master emails → master id (owner + masters only)
+const PFX = SID ? ["salons", SID] : [];
+const SD = (...segs) => doc(db, ...PFX, ...segs);         // a document of the open salon
+const SC = name => collection(db, ...PFX, name);          // a collection of the open salon
+const settingsRef = SD("settings", "salon");
+const staffRef = SD("private", "staff");   // master emails → master id (owner + masters only)
 
 /* ================= realtime data ================= */
+if (SID) onSnapshot(doc(db, "salons", SID), snap => { META = snap.exists() ? snap.data() : null; metaLoaded = true; renderSoon(true); },
+  () => { metaLoaded = true; renderSoon(true); });
+onSnapshot(doc(db, "billing", "config"), snap => { BILL = snap.exists() ? snap.data() : null; renderSoon(true); }, () => {});
 onSnapshot(settingsRef, { includeMetadataChanges: true }, snap => {
   // A "not found" answer from the offline cache (weak connection) is not trusted:
   // keep what we have and wait for the server.
@@ -262,34 +284,34 @@ onSnapshot(settingsRef, { includeMetadataChanges: true }, snap => {
   renderSoon(true);
 }, () => { setLoaded = true; setError = true; renderSoon(true); });
 
-onSnapshot(query(collection(db, "busy"), where("date", ">=", addDays(todayKey(), -1))), snap => {
+onSnapshot(query(SC("busy"), where("date", ">=", addDays(todayKey(), -1))), snap => {
   BUSY = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
   renderSoon(true);
 }, () => {});
 
 // Photo gallery: customers only get photos that are not hidden.
-onSnapshot(collection(db, "reviews"), snap => {
+onSnapshot(SC("reviews"), snap => {
   REVIEWS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0)); render(true);
 }, () => { REVIEWS = []; });
-onSnapshot(collection(db, "avatars"), snap => {
+onSnapshot(SC("avatars"), snap => {
   const m = {}; snap.docs.forEach(d => { const x = d.data(); if (x && x.img) m[d.id] = x.img; }); AVATARS = m; render(true);
 }, () => {});
-onSnapshot(query(collection(db, "works"), where("hidden", "==", false)), snap => {
+onSnapshot(query(SC("works"), where("hidden", "==", false)), snap => {
   PUB_WORKS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0));
   renderSoon(true);
 }, () => { PUB_WORKS = []; });
 function watchAllWorks() {
-  unsubOwner.push(onSnapshot(collection(db, "works"), snap => {
+  unsubOwner.push(onSnapshot(SC("works"), snap => {
     ALL_WORKS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (b.created || 0) - (a.created || 0));
     renderSoon(true);
   }, () => { ALL_WORKS = []; }));
 }
 
 function watchMine() {
-  const ids = lsGet("nb-my", []);
+  const ids = lsGet(lsk("nb-my"), []);
   ids.forEach(id => {
     if (unsubMy[id]) return;
-    unsubMy[id] = onSnapshot(doc(db, "bookings", id), snap => {
+    unsubMy[id] = onSnapshot(SD("bookings", id), snap => {
       MY[id] = snap.exists() ? Object.assign({ id }, snap.data()) : null;
       renderSoon(true);
     }, () => { MY[id] = null; });
@@ -324,6 +346,14 @@ async function resolveRole(user) {
   }
   if (!user.emailVerified) { needVerify = true; renderSoon(true); return; }
   roleChecking = true; renderSoon(true);
+  if (SID) {
+    try {
+      const ps = await getDocFromServer(doc(db, "salonsPrivate", SID));
+      if (ps.exists() && String(ps.data().ownerEmail || "").toLowerCase() === (user.email || "").toLowerCase()) {
+        ROLE = "owner"; roleChecking = false; startOwnerWatch(); maybeCreateDefaults(); renderSoon(true); return;
+      }
+    } catch (e) { /* not this salon's owner */ }
+  }
   try {
     const snap = await getDocFromServer(staffRef);
     const map = snap.exists() ? (snap.data().map || {}) : {};
@@ -335,18 +365,23 @@ async function resolveRole(user) {
 }
 function startOwnerWatch() {
   const denied = () => { ownerDenied = true; renderSoon(true); };
-  unsubOwner.push(onSnapshot(query(collection(db, "bookings"), where("status", "==", "pending")), snap => {
+  if (isAdmin()) {
+    unsubOwner.push(onSnapshot(collection(db, "salons"), snap => { SALONS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.created || 0) - (b.created || 0)); renderSoon(true); }, () => {}));
+    unsubOwner.push(onSnapshot(collection(db, "salonsPrivate"), snap => { const m = {}; snap.docs.forEach(d => { m[d.id] = d.data().ownerEmail || ""; }); OWNERS = m; renderSoon(true); }, () => {}));
+    getDoc(doc(db, "settings", "salon")).then(x => { if (x.exists() && x.data().name) { MAIN_NAME = x.data().name; renderSoon(true); } }).catch(() => {});
+  }
+  unsubOwner.push(onSnapshot(query(SC("bookings"), where("status", "==", "pending")), snap => {
     PENDING = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     renderSoon(true);
   }, denied));
   // every booking made in the last 2 days (also the automatically confirmed ones)
-  unsubOwner.push(onSnapshot(query(collection(db, "bookings"), where("created", ">=", Date.now() - NEW_WINDOW)), snap => {
+  unsubOwner.push(onSnapshot(query(SC("bookings"), where("created", ">=", Date.now() - NEW_WINDOW)), snap => {
     const before = new Set(NEWB.map(b => b.id));
     NEWB = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     notifyNew(before);
     renderSoon(true);
   }, denied));
-  unsubOwner.push(onSnapshot(query(collection(db, "bookings"), orderBy("updated", "desc"), limit(15)), snap => {
+  unsubOwner.push(onSnapshot(query(SC("bookings"), orderBy("updated", "desc"), limit(15)), snap => {
     RECENT = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     renderSoon(true);
   }, denied));
@@ -359,7 +394,7 @@ function startOwnerWatch() {
 }
 // A master only ever loads their own bookings.
 function startMasterWatch() {
-  unsubOwner.push(onSnapshot(query(collection(db, "bookings"), where("artist", "==", MY_ARTIST)), snap => {
+  unsubOwner.push(onSnapshot(query(SC("bookings"), where("artist", "==", MY_ARTIST)), snap => {
     const before = new Set(NEWB.map(b => b.id));
     MASTER_ALL = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     deriveMaster();
@@ -381,7 +416,7 @@ function watchJday() {
   if (unsubJday) { unsubJday(); unsubJday = null; }
   if (ROLE !== "owner") return;
   JDAY = [];
-  unsubJday = onSnapshot(query(collection(db, "bookings"), where("date", "==", S.jDate)), snap => {
+  unsubJday = onSnapshot(query(SC("bookings"), where("date", "==", S.jDate)), snap => {
     JDAY = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     renderSoon(true);
   }, () => { ownerDenied = true; renderSoon(true); });
@@ -399,6 +434,184 @@ async function maybeCreateDefaults() {
   catch (e) { if (e && e.code === "permission-denied") ownerDenied = true; }
   creatingDefaults = false;
   renderSoon(true);
+}
+
+/* ================= salons & subscription ================= */
+const DAY = 864e5, GRACE = 3 * DAY;
+const billing = () => Object.assign({ price: 990, trialDays: 7, phone: "", bank: "", recipient: "", qr: "" }, BILL || {});
+function addMonths(t, n) { const d = new Date(t); d.setMonth(d.getMonth() + n); return d.getTime(); }
+const dmy = t => { const d = new Date(t); return d.getDate() + " " + MONG[d.getMonth()]; };
+function subState(m) {
+  if (!m) return { active: true, free: true };
+  if (m.free) return { active: true, free: true };
+  const now = Date.now(), until = m.until || 0;
+  return { active: !m.paused && now < until + GRACE, paused: !!m.paused, until, days: Math.ceil((until - now) / DAY), trial: !m.paidOnce,
+    grace: now >= until && now < until + GRACE, claim: m.payClaim || null, rejected: !!m.rejected, price: Number(m.price) || Number(billing().price) || 0 };
+}
+const SUB = () => SID ? subState(META) : { active: true, free: true };
+function subPill(m) {
+  const x = subState(m);
+  if (x.free) return ["Бесплатно", "p-free"];
+  if (x.paused) return ["Приостановлен", "p-bad"];
+  if (x.claim) return ["Проверить оплату", "p-check"];
+  if (!x.active) return ["Закрыт", "p-bad"];
+  if (x.grace) return ["Просрочен", "p-bad"];
+  if (x.trial) return ["Пробный · " + Math.max(0, x.days) + " дн.", "p-trial"];
+  return ["Оплачено до " + dmy(x.until), "p-ok"];
+}
+const translit = t => String(t || "").toLowerCase().replace(/[а-яё]/g, ch => ({ а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "c", ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya" })[ch] ?? "")
+  .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
+const fld = (id, label, val, extra) => `<label class="field" for="${id}">${label}<input id="${id}" value="${esc(val == null ? "" : val)}" ${extra || ""}></label>`;
+
+/* clients: salon link that doesn't exist, or a salon whose subscription is closed */
+function vSalonMissing() {
+  return `<div class="note">${ICON.info}<span>Салон по этой ссылке не найден. Проверьте ссылку у салона.</span></div>`;
+}
+function vClientPaused() {
+  return `<h1 class="h1">${esc(SET ? SET.name : "Салон")}</h1>
+  <div class="note">${ICON.info}<span>Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с салоном напрямую.</span></div>
+  ${SET && SET.phone ? `<a class="btn" href="tel:${esc(SET.phone.replace(/[^+\d]/g, ""))}">${ICON.phone || ""}Позвонить в салон</a>` : ""}
+  <button class="btn ghost" data-act="go" data-v="bookings">Мои записи</button>`;
+}
+
+/* salon owner: subscription page (P1) and closed cabinet (P2) */
+function subStatusCard() {
+  const x = SUB(), b = billing();
+  if (x.free) return `<div class="card stack"><b>Подписка</b><span class="small muted">Для этого салона приложение бесплатно.</span></div>`;
+  const title = x.claim ? "Оплата отправлена" : x.paused ? "Салон приостановлен" : !x.active ? "Срок подписки закончился" : x.trial ? "Пробный период" : "Подписка оплачена";
+  const pill = x.claim ? "Ждёт проверки" : x.paused || !x.active ? "Закрыт" : x.grace ? "Просрочен" : (x.days <= 0 ? "сегодня" : "осталось " + x.days + " " + plural(x.days, ["день", "дня", "дней"]));
+  const text = x.claim ? "Как только администратор увидит перевод, подписка продлится. Обычно в течение дня."
+    : x.rejected ? "Перевод не найден. Проверьте перевод или свяжитесь с администратором."
+    : x.paused ? "Свяжитесь с администратором приложения."
+    : !x.active ? "Кабинет закрыт, пока подписка не будет продлена. Записи и данные сохранены."
+    : x.grace ? "Срок закончился " + dmy(x.until) + ". Осталось несколько дней, чтобы оплатить."
+    : (x.trial ? "Бесплатный период до " : "Оплачено до ") + dmy(x.until) + ".";
+  const total = x.trial ? (b.trialDays || 7) * DAY : 30 * DAY;
+  const pct = x.claim ? 100 : Math.max(4, Math.min(100, Math.round((x.until - Date.now()) / total * 100)));
+  return `<div class="card stack sub-card ${x.active && !x.grace && !x.rejected ? "" : "sub-warn"}" style="gap:6px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b>${title}</b><span class="pill p-trial">${esc(pill)}</span></div>
+    <span class="small">${esc(text)}</span>
+    <div class="bar8"><i style="width:${pct}%;background:#C98A2B"></i></div></div>`;
+}
+function vSub() {
+  const x = SUB(), b = billing(), n = S.subN || 1, total = x.price * n;
+  const seg = [1, 3, 6].map(v => `<button data-act="sub-n" data-v="${v}" aria-pressed="${n === v}">${v} ${plural(v, ["месяц", "месяца", "месяцев"])}</button>`).join("");
+  return `${header("", "Подписка", "settings")}
+  ${subStatusCard()}
+  ${x.free ? "" : `
+  <div class="card stack">
+    <div style="display:flex;justify-content:space-between;align-items:baseline"><b>Оплата за</b><span class="small muted">${rub(x.price)} в месяц</span></div>
+    <div class="seg" role="group" aria-label="Срок">${seg}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center"><span>К оплате</span><b style="font-size:22px">${rub(total)}</b></div>
+  </div>
+  <div class="card row" style="gap:14px;align-items:center">
+    ${b.qr ? `<img src="${esc(b.qr)}" alt="QR-код для оплаты по СБП" style="width:110px;height:110px;border-radius:10px;object-fit:contain;background:#fff;flex-shrink:0">` : ""}
+    <div class="stack" style="gap:3px;min-width:0"><b>Перевод по СБП</b>
+      ${b.bank ? `<span class="small">${esc(b.bank)}</span>` : ""}
+      ${b.phone ? `<b style="font-size:16px;user-select:all">${esc(b.phone)}</b>` : `<span class="small muted">Реквизиты ещё не указаны администратором.</span>`}
+      ${b.recipient ? `<span class="tiny muted">Получатель: ${esc(b.recipient)}</span>` : ""}
+      <span class="tiny muted">Комментарий: «${esc(SET ? SET.name : SID)}»</span></div>
+  </div>
+  ${x.claim ? `<button class="btn" disabled>Отправлено — ждём проверки</button>`
+    : `<button class="btn" data-act="sub-claim" ${S.saving ? "disabled" : ""}>Я оплатил(а) ${rub(total)}</button>
+       <p class="tiny muted" style="text-align:center">Сначала переведите деньги в приложении своего банка, потом нажмите кнопку.</p>`}`}`;
+}
+function vLocked() {
+  const x = SUB();
+  if (ROLE !== "owner") return `<h1 class="h1">Кабинет закрыт</h1><div class="note">${ICON.info}<span>Подписка салона закончилась. Владелец салона может продлить её в своём кабинете. Записи и данные сохранены.</span></div><button class="btn ghost" data-act="logout">Выйти</button>`;
+  return `<h1 class="h1" style="font-size:26px">${x.paused ? "Салон приостановлен" : "Срок подписки закончился"}</h1>
+  <p class="small muted" style="margin-top:-8px">${x.paused ? "Свяжитесь с администратором приложения." : "Кабинет салона закрыт, пока подписка не будет продлена."}</p>
+  <div class="card stack"><b>Что сохранено</b>
+    <div class="small">✓ Все записи клиентов и журнал</div><div class="small">✓ Мастера, услуги, фото и отзывы</div>
+    <div class="small" style="color:var(--bad)">✕ Новые онлайн-записи временно отключены</div></div>
+  ${x.paused ? "" : `<button class="btn" data-act="go" data-v="sub">${x.claim ? "Оплата на проверке — открыть" : "Продлить подписку · " + rub(x.price)}</button>`}
+  <p class="tiny muted" style="text-align:center">Напоминание появляется за 3 дня до конца срока, после окончания есть ещё 3 дня на оплату.</p>
+  <button class="btn ghost" data-act="logout">Выйти</button>`;
+}
+// small reminder in the journal for salon owners (trial, last 3 days, waiting check, not found)
+function subBanner() {
+  if (!SID || ROLE !== "owner" || isAdmin()) return "";
+  const x = SUB(); if (x.free) return "";
+  if (!(x.trial || x.days <= 3 || x.claim || x.rejected || x.grace)) return "";
+  const t = x.claim ? "Оплата на проверке" : x.rejected ? "Перевод не найден — проверьте оплату" : x.grace ? "Подписка просрочена — оплатите" : x.trial ? "Пробный период: осталось " + Math.max(0, x.days) + " " + plural(Math.max(0, x.days), ["день", "дня", "дней"]) : "Подписка заканчивается через " + x.days + " " + plural(x.days, ["день", "дня", "дней"]);
+  return `<button class="card sub-banner" data-act="go" data-v="sub"><span>${esc(t)}</span><b>Подписка ›</b></button>`;
+}
+
+/* administrator (zakorchemnaiazanna@mail.ru): all salons, payments, access, price */
+function vSalons() {
+  const now = new Date(), monthKey = now.getFullYear() + "-" + now.getMonth();
+  let month = 0; SALONS.forEach(m => (m.paidLog || []).forEach(p => { const d = new Date(p.at); if (d.getFullYear() + "-" + d.getMonth() === monthKey) month += Number(p.amount || 0); }));
+  const checks = SALONS.filter(m => m.payClaim).length, paid = SALONS.filter(m => !m.free && m.paidOnce && subState(m).active).length;
+  const card = (sid, name, line, pill, cls, extra, hl) => `<div class="card stack salon-card ${hl ? "hl" : ""}">
+      <div style="display:flex;gap:10px;align-items:center"><div style="flex:1;min-width:0"><b style="font-size:15px">${esc(name)}</b><div class="tiny muted">${esc(line)}</div></div><span class="pill ${cls}">${esc(pill)}</span></div>
+      ${extra || ""}
+      <div class="btns">${(SID || "") === (sid || "") ? `<span class="small muted" style="flex:1;align-self:center">Сейчас открыт</span>` : `<button class="btn sm" data-act="sal-open" data-v="${esc(sid || "main")}">Открыть</button>`}
+        ${sid ? `<button class="btn sm ghost" data-act="sal-acc" data-v="${esc(sid)}">Доступ и оплата</button>` : ""}</div></div>`;
+  return `<div style="display:flex;justify-content:space-between;align-items:center"><h1 class="h1" style="font-size:26px">Мои салоны</h1>
+    <button class="linkbtn" data-act="go" data-v="billing">Цена и реквизиты ›</button></div>
+  <div class="stat3"><div class="card"><span class="tiny muted">За месяц</span><b>${rub(month)}</b></div><div class="card"><span class="tiny muted">Оплачено</span><b>${paid}</b></div><div class="card"><span class="tiny muted">Проверить</span><b style="color:var(--accent)">${checks}</b></div></div>
+  ${card("", MAIN_NAME, "Ваш салон", "Бесплатно навсегда", "p-free")}
+  ${SALONS.map(m => { const [pl, cls] = subPill(m), c = m.payClaim;
+    const line = c ? "Сообщил(а) об оплате " + dmy(c.at) + " · " + rub(c.amount) + " за " + c.months + " " + plural(c.months, ["месяц", "месяца", "месяцев"]) : (m.city || "") + (OWNERS[m.id] ? " · " + OWNERS[m.id] : "");
+    const extra = c ? `<div class="btns"><button class="btn sm" data-act="sal-ok" data-v="${esc(m.id)}">Деньги пришли</button><button class="btn sm ghost" style="color:var(--bad)" data-act="sal-no" data-v="${esc(m.id)}">Не пришли</button></div>` : "";
+    return card(m.id, m.name || m.id, line, pl, cls, extra, !!c); }).join("")}
+  <button class="btn" data-act="go" data-v="salonNew">${ICON.plus}Добавить салон</button>
+  <p class="tiny muted">У каждого салона своя ссылка, свои мастера, услуги и записи. Клиенты одного салона не видят другие салоны. Проверьте перевод в своём банке, затем нажмите «Деньги пришли» — салон продлится на оплаченный срок.</p>`;
+}
+function vSalonNew() {
+  const N = S.ns || (S.ns = { name: "", city: "", phone: "", email: "", slug: "", slugTouched: false, copy: true });
+  return `${header("", "Новый салон", "salons")}
+  <div class="card stack">
+    ${fld("nsName", "Название салона *", N.name, 'maxlength="60" autocomplete="off"')}
+    ${fld("nsCity", "Город, адрес", N.city, 'maxlength="80" autocomplete="off"')}
+    ${fld("nsPhone", "Телефон салона", N.phone, 'type="tel" inputmode="tel" maxlength="25" autocomplete="off"')}
+    ${fld("nsSlug", "Адрес ссылки (латиницей) *", N.slug, 'maxlength="30" autocomplete="off" autocapitalize="off" placeholder="например: lana"')}
+    <span class="tiny muted" style="margin-top:-6px;word-break:break-all">Ссылка для клиентов: ${esc(salonUrl(N.slug || "…"))}</span>
+  </div>
+  <div class="card stack"><b>Кто будет управлять</b>
+    ${fld("nsEmail", "Email владельца этого салона *", N.email, 'type="email" inputmode="email" maxlength="80" autocomplete="off"')}
+    <span class="tiny muted">Он зарегистрируется с этим email и сам придумает пароль. Своих мастеров, цены и записи он настроит сам.</span></div>
+  <button class="card row check-row" data-act="ns-copy" aria-pressed="${N.copy}"><span class="cbox">${N.copy ? ICON.check : ""}</span>
+    <span class="stack" style="gap:2px;text-align:left"><b>Скопировать услуги и цены</b><span class="tiny muted">из «${esc(SET ? SET.name : MAIN_NAME)}» — потом можно изменить</span></span></button>
+  ${S.nsErr ? `<div class="err-box" role="alert">${esc(S.nsErr)}</div>` : ""}
+  <button class="btn" data-act="ns-save" ${S.saving ? "disabled" : ""}>${S.saving ? "Создаём…" : "Создать салон · " + (billing().trialDays || 7) + " дней бесплатно"}</button>`;
+}
+function vSalonAccess() {
+  const m = SALONS.find(x => x.id === S.accSid);
+  if (!m) return `${header("", "Салон", "salons")}${loading()}`;
+  const A = S.acc && S.acc.id === m.id ? S.acc : (S.acc = { id: m.id, email: OWNERS[m.id] || "", price: m.price || "" });
+  const [pl, cls] = subPill(m), cl = salonUrl(m.id), ol = salonUrl(m.id, true);
+  const share = (label, url) => `<div class="stack" style="gap:6px"><b>${label}</b><div class="linkbox">${esc(url)}</div>
+    <div class="msgbtns"><button class="btn sm ghost" data-act="copy" data-v="${esc(url)}">Копировать</button><a class="btn sm ghost" href="${esc("https://wa.me/?text=" + encodeURIComponent(url))}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a></div></div>`;
+  return `${header("", m.name || m.id, "salons")}
+  <div style="display:flex;gap:8px;align-items:center;margin-top:-10px"><span class="pill ${cls}">${esc(pl)}</span><span class="tiny muted">${esc(m.city || "")}</span></div>
+  <div class="card stack">${share("Ссылка для клиентов", cl)}${share("Ссылка для входа владельца и мастеров", ol)}</div>
+  <div class="card stack"><b>Владелец салона</b>
+    ${fld("acEmail", "Email владельца", A.email, 'type="email" inputmode="email" maxlength="80" autocomplete="off"')}
+    <span class="tiny muted" style="margin-top:-4px">Владелец сам добавляет своих мастеров: «Настройки → Мастера».</span>
+    <button class="btn sm ghost" data-act="ac-email">Сохранить email</button></div>
+  <div class="card stack"><b>Оплата</b>
+    <div class="small">${m.free ? "Бесплатно, без ограничений" : (m.paidOnce ? "Оплачено до " : "Пробный период до ") + dmy(m.until || 0)}</div>
+    ${fld("acPrice", "Своя цена в месяц, ₽ (пусто = обычная " + rub(billing().price) + ")", A.price, 'inputmode="numeric" maxlength="7" autocomplete="off"')}
+    <div class="btns"><button class="btn sm ghost" data-act="ac-price">Сохранить цену</button><button class="btn sm ghost" data-act="ac-month">+1 месяц бесплатно</button></div>
+    <button class="btn sm ghost" data-act="ac-free">${m.free ? "Сделать платным" : "Сделать бесплатным навсегда"}</button>
+    ${(m.paidLog || []).length ? `<div class="tiny muted">Оплаты: ${(m.paidLog || []).slice(-5).reverse().map(p => dmy(p.at) + " — " + rub(p.amount)).join(" · ")}</div>` : ""}
+  </div>
+  <button class="btn ${m.paused ? "" : "danger"}" data-act="ac-pause">${m.paused ? "Возобновить салон" : "Приостановить салон"}</button>`;
+}
+function vBilling() {
+  const B = S.bill || (S.bill = Object.assign({}, billing()));
+  return `${header("", "Цена и реквизиты", "salons")}
+  <div class="card stack"><b>Подписка для салонов</b>
+    <div class="grid2">${fld("biPrice", "Цена в месяц, ₽", B.price, 'inputmode="numeric" maxlength="7"')}${fld("biTrial", "Бесплатно, дней", B.trialDays, 'inputmode="numeric" maxlength="3"')}</div>
+    <span class="tiny muted">Салоны увидят: ${rub(B.price)} за месяц, ${rub(B.price * 3)} за 3 месяца, ${rub(B.price * 6)} за 6 месяцев. Новая цена — со следующей оплаты. Ваш салон всегда бесплатный.</span></div>
+  <div class="card stack"><b>Куда переводить (СБП)</b>
+    ${fld("biPhone", "Номер телефона", B.phone, 'type="tel" inputmode="tel" maxlength="25"')}
+    <div class="grid2">${fld("biBank", "Банк", B.bank, 'maxlength="40"')}${fld("biRecip", "Получатель", B.recipient, 'maxlength="40" placeholder="Имя Ф."')}</div>
+    ${B.qr ? `<img src="${esc(B.qr)}" alt="QR-код" style="width:140px;height:140px;object-fit:contain;background:#fff;border-radius:10px;align-self:center">` : ""}
+    <button class="btn sm ghost" data-act="bi-qr">${B.qr ? "Заменить QR-код" : "Загрузить QR-код из банка"}</button>
+    <span class="tiny muted">QR-код для перевода можно сделать в приложении вашего банка (СБП → «QR-код для получения») и сохранить картинку.</span></div>
+  <button class="btn" data-act="bi-save" ${S.saving ? "disabled" : ""}>Сохранить</button>`;
 }
 
 /* ================= install prompt ================= */
@@ -422,7 +635,9 @@ function logoHTML(cls) {
 }
 function topBar() {
   const sub = S.mode === "owner" ? (ROLE === "master" ? "Кабинет мастера" : "Кабинет салона") : "Онлайн-запись";
-  top.innerHTML = `${logoHTML("logo")}<div class="name"><b>${esc(SET ? SET.name : "Онлайн-запись")}</b><span>${sub}</span></div>`;
+  const sw = S.mode === "owner" && isAdmin() && ROLE === "owner";
+  const checks = sw ? SALONS.filter(m => m.payClaim).length : 0;
+  top.innerHTML = `${logoHTML("logo")}${sw ? `<button class="name name-btn" data-act="go" data-v="salons" aria-label="Мои салоны"><b>${esc(SET ? SET.name : "Онлайн-запись")} ▾</b><span>${sub}${checks ? " · оплат к проверке: " + checks : ""}</span></button>` : `<div class="name"><b>${esc(SET ? SET.name : "Онлайн-запись")}</b><span>${sub}</span></div>`}`;
 }
 function header(step, title, backTo) {
   return `<div class="head"><button class="back" data-act="go" data-v="${backTo}" aria-label="Назад">${ICON.back}</button>
@@ -635,7 +850,7 @@ async function sendReview() {
   if (!b || !R.rating) { render(true); return; }
   S.saving = true; render(true);
   try {
-    await setDoc(doc(db, "reviews", b.id), { artist: b.artist, name: b.name, rating: R.rating, text: (R.text || "").trim().slice(0, 500), created: Date.now(), edited: false });
+    await setDoc(SD("reviews", b.id), { artist: b.artist, name: b.name, rating: R.rating, text: (R.text || "").trim().slice(0, 500), created: Date.now(), edited: false });
     toast("Спасибо за отзыв!"); S.saving = false; S.tried = false; S.revDraft = null; go("bookings"); return;
   } catch (err) { toast(errText(err)); }
   S.saving = false; render(true);
@@ -667,12 +882,12 @@ function vReviewsAdmin() {
 async function saveReviewEdit() {
   const E = S.revEdit; if (!E) return;
   if (!E.rating) { toast("Поставьте оценку"); return; }
-  try { await updateDoc(doc(db, "reviews", E.id), { rating: E.rating, text: (E.text || "").trim().slice(0, 500), edited: true, updated: Date.now() }); S.revEdit = null; toast("Отзыв изменён"); }
+  try { await updateDoc(SD("reviews", E.id), { rating: E.rating, text: (E.text || "").trim().slice(0, 500), edited: true, updated: Date.now() }); S.revEdit = null; toast("Отзыв изменён"); }
   catch (err) { toast(errText(err)); }
   render(true);
 }
 async function deleteReview(id) {
-  try { await deleteDoc(doc(db, "reviews", id)); toast("Отзыв удалён"); } catch (err) { toast(errText(err)); }
+  try { await deleteDoc(SD("reviews", id)); toast("Отзыв удалён"); } catch (err) { toast(errText(err)); }
   S.armed = null; render(true);
 }
 /* ---------- photo gallery (customers) ---------- */
@@ -723,7 +938,7 @@ function vPhoto() {
 const barPhoto = () => { const w = PUB_WORKS.find(x => x.id === S.photo); return w && SET.artists.some(a => a.id === w.artist) ? `<div class="cta wrap"><button class="btn" style="flex:1" data-act="book-master" data-v="${esc(w.artist)}">Записаться к мастеру ${esc(artistName(w.artist))}</button></div>` : clientTabs(); };
 async function loadFull(id) {
   if (FULL[id]) return;
-  try { const s = await getDoc(doc(db, "workImages", id)); if (s.exists() && s.data().img) { FULL[id] = s.data().img; renderSoon(true); } } catch (e) {}
+  try { const s = await getDoc(SD("workImages", id)); if (s.exists() && s.data().img) { FULL[id] = s.data().img; renderSoon(true); } } catch (e) {}
 }
 const firstCatId = () => (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
 
@@ -742,8 +957,8 @@ function pwField(id, label, val, auto) {
 }
 function vLogin() {
   const L = S.login, reg = L.mode === "register";
-  return `<h1 class="h1" style="font-size:26px">${reg ? "Регистрация мастера" : "Вход для салона"}</h1>
-  <p class="small muted">${reg ? "Укажите email, который владелец вписал в «Настройки → Мастера», и придумайте пароль (не меньше 6 символов)." : "Войдите с email и паролем владельца или мастера."}</p>
+  return `<h1 class="h1" style="font-size:26px">${reg ? "Регистрация" : "Вход для салона"}</h1>
+  <p class="small muted">${reg ? "Укажите email, который вам дал владелец салона или администратор, и придумайте пароль (не меньше 6 символов)." : "Войдите с email и паролем владельца или мастера."}</p>
   <form id="loginForm" class="stack" novalidate>
     <label class="field" for="lEmail">Email<input id="lEmail" type="email" inputmode="email" autocomplete="username" value="${esc(L.email)}"></label>
     ${pwField("lPw", reg ? "Придумайте пароль" : "Пароль", L.pw, reg ? "new-password" : "current-password")}
@@ -752,7 +967,7 @@ function vLogin() {
     <button class="btn" type="submit" ${L.busy ? "disabled" : ""}>${L.busy ? (reg ? "Создаём…" : "Входим…") : (reg ? "Зарегистрироваться" : "Войти")}</button>
     ${reg ? "" : `<button class="linkbtn" type="button" data-act="forgot" style="align-self:center">Забыли пароль?</button>`}
   </form>
-  <button class="btn ghost" data-act="login-mode">${reg ? "У меня уже есть аккаунт — войти" : "Я мастер — регистрация"}</button>
+  <button class="btn ghost" data-act="login-mode">${reg ? "У меня уже есть аккаунт — войти" : "Я мастер или новый владелец — регистрация"}</button>
   <a class="linkbtn" href="#" style="align-self:center;text-decoration:none">Открыть приложение для клиентов</a>`;
 }
 function vVerify() {
@@ -811,6 +1026,7 @@ function vJournal() {
   const nowLine = (k === todayKey() && nm >= OPEN && nm <= CLOSE) ? `<div class="now" style="top:${(nm - OPEN) / 60 * H}px"></div>` : "";
   return `<div class="jhead"><div><div class="step">Журнал записей</div><h1 class="h1">${esc(k === todayKey() ? "Сегодня, " + shortDate(k) : longDate(k))}</h1></div>
     <div class="btns"><button class="back" data-act="jday" data-v="-1" aria-label="Предыдущий день">${ICON.back}</button><button class="back" data-act="jday" data-v="1" aria-label="Следующий день">${ICON.next}</button></div></div>
+  ${subBanner()}
   <button class="btn" data-act="mb-new">${ICON.plus}Записать клиента</button>
   <div class="stats"><span class="stat"><b>${day.length}</b> ${plural(day.length, ["запись", "записи", "записей"])}</span><span class="stat">Выручка: <b>${rub(revenue)}</b></span>${k !== todayKey() ? `<button class="stat" data-act="jtoday" style="font-weight:700;color:var(--accent)">К сегодняшнему дню</button>` : ""}</div>
   ${isClosed(k) ? `<div class="empty">Выходной день.</div>` : `
@@ -858,15 +1074,15 @@ async function saveManual() {
   const chair = sel.some(id => svcById(id).cat === PEDI_CAT);
   const artist = ROLE === "master" ? MY_ARTIST : M.artist;
   if (!artist || !artistFree(artist, M.date, M.time, dur) || (chair && !chairFree(M.date, M.time, dur))) { toast("Это время уже занято. Выберите другое."); M.time = null; render(true); return; }
-  const id = doc(collection(db, "bookings")).id, now = Date.now();
+  const id = doc(SC("bookings")).id, now = Date.now();
   const data = { date: M.date, start: M.time, dur, artist, anyArtist: false, services: sel, serviceNames: sel.map(x => svcById(x).name),
     total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), name: M.name.trim().slice(0, 60), phone: M.phone.trim().slice(0, 25),
     note: M.note.trim().slice(0, 250), status: "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {}) };
   S.saving = true; render(true);
   try {
     const batch = writeBatch(db);
-    batch.set(doc(db, "bookings", id), data);
-    batch.set(doc(db, "busy", id), { date: data.date, start: data.start, dur, artist, ...(chair ? { chair: true } : {}) });
+    batch.set(SD("bookings", id), data);
+    batch.set(SD("busy", id), { date: data.date, start: data.start, dur, artist, ...(chair ? { chair: true } : {}) });
     await batch.commit();
     toast("Клиент записан: " + data.name + ", " + hm(data.start));
     S.saving = false; S.tried = false; S.mb = null; S.jDate = data.date; watchJday(); go("journal"); return;
@@ -877,7 +1093,7 @@ function vInbox() {
   const pending = PENDING.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
   const recent = RECENT.filter(b => b.status !== "pending").slice(0, 10);
   const fresh = NEWB.filter(b => b.status === "confirmed").sort((a, b) => (b.created || 0) - (a.created || 0));
-  if (S.view === "inbox") { const mx = Math.max(inboxSeen, ...NEWB.map(b => b.created || 0)); if (mx > inboxSeen) { inboxSeen = mx; lsSet("nb-inbox-seen", mx); } }
+  if (S.view === "inbox") { const mx = Math.max(inboxSeen, ...NEWB.map(b => b.created || 0)); if (mx > inboxSeen) { inboxSeen = mx; lsSet(lsk("nb-inbox-seen"), mx); } }
   const ago = t => { const m = Math.round((Date.now() - t) / 60000); if (m < 1) return "только что"; if (m < 60) return m + " мин назад"; if (m < 1440) return Math.round(m / 60) + " ч назад"; const d = Math.round(m / 1440); return d + " " + plural(d, ["день", "дня", "дней"]) + " назад"; };
   return `<h1 class="h1" style="font-size:26px">Новые записи</h1>
   ${pending.length ? pending.map(b => `<div class="card stack" style="border:2px solid var(--accent)">
@@ -928,6 +1144,8 @@ function vSettings() {
   const D = S.draft;
   const order = [1, 2, 3, 4, 5, 6, 0];
   return `<h1 class="h1" style="font-size:26px">Настройки салона</h1>
+  ${isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="salons"><span><b>Мои салоны и оплаты</b><br><span class="tiny muted">${SALONS.length + 1} ${plural(SALONS.length + 1, ["салон", "салона", "салонов"])}${SALONS.filter(m => m.payClaim).length ? " · проверить оплат: " + SALONS.filter(m => m.payClaim).length : ""}</span></span><b>›</b></button>` : ""}
+  ${SID && !isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="sub"><span><b>Подписка</b><br><span class="tiny muted">${esc(subPill(META)[0])}</span></span><b>›</b></button>` : ""}
   <p class="small muted">Изменения увидят все клиенты после нажатия «Сохранить».</p>
   <div class="card stack">
     <h2 class="h2">Логотип</h2>
@@ -970,7 +1188,7 @@ function vSettings() {
   </div>
   <div class="card stack">
     <h2 class="h2">Мастера</h2>
-    <p class="small muted">Чтобы мастер мог входить и видеть свои записи, впишите его email. Мастер открывает ссылку кабинета, нажимает «Я мастер — регистрация» и сам придумывает пароль.</p>
+    <p class="small muted">Чтобы мастер мог входить и видеть свои записи, впишите его email. Мастер открывает ссылку кабинета, нажимает «Я мастер или новый владелец — регистрация» и сам придумывает пароль.</p>
     ${D.artists.map((a, i) => `<div class="ed">
       <div style="display:flex;gap:8px;align-items:center">
         <button class="av-btn" data-act="av-pick" data-v="${esc(a.id)}" aria-label="Фото профиля: ${esc(a.name || "мастер")}">${avatar(a.id, a.name, 44)}<span class="av-cam">${ICON.camera}</span></button>
@@ -979,7 +1197,7 @@ function vSettings() {
       <input class="inp" id="artEmail${i}" type="email" inputmode="email" autocomplete="off" aria-label="Email мастера ${esc(a.name)} для входа" data-d="artistEmail:${i}" maxlength="80" value="${esc(a.email || "")}" placeholder="Email для входа (необязательно)">
     </div>`).join("")}
     <p class="tiny muted">Нажмите на кружок, чтобы поставить фото мастера. Мастер может сменить своё фото сам во вкладке «Аккаунт».</p>
-    <p class="tiny muted">Ссылка для входа мастеров: <b style="user-select:all;word-break:break-all">${esc(location.origin + location.pathname)}#owner</b></p>
+    <p class="tiny muted">Ссылка для входа мастеров: <b style="user-select:all;word-break:break-all">${esc(SID ? salonUrl(SID, true) : location.origin + location.pathname + "#owner")}</b></p>
     <button class="btn sm ghost" data-act="add-artist">${ICON.plus}Добавить мастера</button>
   </div>
   <div class="card stack">
@@ -1051,7 +1269,7 @@ async function loadReport() {
   REPORT = { key, loading: true, list: REPORT && REPORT.key === key ? REPORT.list : [] };
   renderSoon(true);
   try {
-    const q = await getDocs(query(collection(db, "bookings"), where("date", ">=", from), where("date", "<=", to)));
+    const q = await getDocs(query(SC("bookings"), where("date", ">=", from), where("date", "<=", to)));
     REPORT = { key, loading: false, list: q.docs.map(d => Object.assign({ id: d.id }, d.data())) };
   } catch (e) { REPORT = { key, loading: false, list: [], err: true }; }
   renderSoon(true);
@@ -1185,6 +1403,8 @@ function render(keepScroll) {
   let html = "", b = "";
   if (S.mode === "client") {
     if (!setLoaded) html = loading();
+    else if (SID && metaLoaded && !META) html = vSalonMissing();
+    else if (SID && META && !SUB().active && ["home", "services", "artist", "time", "details", "gallery", "photo", "reviews"].includes(S.view || "home")) { html = vClientPaused(); b = clientTabs(); }
     else if (!SET) html = `<div class="note">${ICON.info}<span>${setError ? "Не удалось загрузить данные салона. Проверьте подключение к интернету." : "Салон ещё не настроен. Владельцу нужно войти в кабинет салона."}</span></div><a class="linkbtn" href="#owner" style="align-self:center;text-decoration:none">Вход для владельца салона</a>`;
     else switch (S.view) {
       case "services": html = vServices(); b = barServices(); break;
@@ -1205,9 +1425,16 @@ function render(keepScroll) {
     else if (roleChecking) html = loading();
     else if (noStaff) html = vNoStaff();
     else if (ownerDenied || !ROLE) html = vDenied();
-    else if (!setLoaded || !SET) html = loading();
+    else if (!setLoaded || !SET || (SID && !metaLoaded)) html = loading();
+    else if (SID && !isAdmin() && !SUB().active && S.view !== "sub") html = vLocked();
+    else if (SID && !isAdmin() && !SUB().active) html = vSub();
     else {
       switch (S.view) {
+        case "salons": html = isAdmin() ? vSalons() : vJournal(); break;
+        case "salonNew": html = isAdmin() ? vSalonNew() : vJournal(); break;
+        case "salonAccess": html = isAdmin() ? vSalonAccess() : vJournal(); break;
+        case "billing": html = isAdmin() ? vBilling() : vJournal(); break;
+        case "sub": html = ROLE === "owner" ? vSub() : vJournal(); break;
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
         case "manual": html = S.mb ? vManual() : vJournal(); break;
@@ -1273,11 +1500,27 @@ document.addEventListener("click", async e => {
     case "disarm": S.armed = null; render(true); break;
     case "cancel": cancelBooking(v); break;
     case "accept":
-      try { await updateDoc(doc(db, "bookings", v), { status: "confirmed", updated: Date.now() }); S.sheet = v; toast("Запись подтверждена. Сообщите клиенту."); }
+      try { await updateDoc(SD("bookings", v), { status: "confirmed", updated: Date.now() }); S.sheet = v; toast("Запись подтверждена. Сообщите клиенту."); }
       catch (err) { toast(errText(err)); }
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
     case "close": S.sheet = null; S.armed = null; render(true); break;
+    case "sal-open": { const sid = v === "main" ? "" : v; location.href = salonUrl(sid, true); break; }
+    case "sal-acc": S.accSid = v; S.acc = null; go("salonAccess"); break;
+    case "sal-ok": confirmPayment(v, true); break;
+    case "sal-no": confirmPayment(v, false); break;
+    case "ns-copy": if (S.ns) { S.ns.copy = !S.ns.copy; render(true); } break;
+    case "ns-save": createSalon(); break;
+    case "ac-email": salonAdminUpdate("email"); break;
+    case "ac-price": salonAdminUpdate("price"); break;
+    case "ac-month": salonAdminUpdate("month"); break;
+    case "ac-free": salonAdminUpdate("free"); break;
+    case "ac-pause": salonAdminUpdate("pause"); break;
+    case "copy": try { await navigator.clipboard.writeText(v); toast("Ссылка скопирована"); } catch (err) { toast("Не удалось скопировать — выделите ссылку и скопируйте"); } break;
+    case "bi-qr": pickImage(async f => { try { const img = await loadImg(f); S.bill.qr = toQr(img); render(true); } catch (err) { toast("Не удалось открыть картинку"); } }); break;
+    case "bi-save": saveBilling(); break;
+    case "sub-n": S.subN = +v; render(true); break;
+    case "sub-claim": claimPayment(); break;
     case "mb-new": S.mb = { artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: S.jDate < todayKey() ? todayKey() : S.jDate, time: null, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break;
     case "mb-artist": if (S.mb) { S.mb.artist = v; S.mb.time = null; render(true); } break;
     case "mb-svc": if (S.mb) { S.mb.sel = S.mb.sel.includes(v) ? S.mb.sel.filter(x => x !== v) : S.mb.sel.concat(v); S.mb.time = null; render(true); } break;
@@ -1296,7 +1539,7 @@ document.addEventListener("click", async e => {
     case "w-publish": publishWork(); break;
     case "w-arm": S.armed = "w:" + v; render(true); break;
     case "w-del": deleteWork(v); break;
-    case "w-hide": { const w = ALL_WORKS.find(x => x.id === v); if (w) { try { await updateDoc(doc(db, "works", v), { hidden: !w.hidden }); toast(w.hidden ? "Фото снова видно клиентам" : "Фото скрыто от клиентов"); } catch (err) { toast(errText(err)); } } break; }
+    case "w-hide": { const w = ALL_WORKS.find(x => x.id === v); if (w) { try { await updateDoc(SD("works", v), { hidden: !w.hidden }); toast(w.hidden ? "Фото снова видно клиентам" : "Фото скрыто от клиентов"); } catch (err) { toast(errText(err)); } } break; }
     case "rep-period": S.repPeriod = v; loadReport(); render(true); break;
     case "rep-master": S.repMaster = v; go("reportMaster"); break;
     case "login-mode": S.login.mode = S.login.mode === "register" ? "login" : "register"; S.login.err = ""; S.login.info = ""; render(true); break;
@@ -1329,6 +1572,18 @@ document.addEventListener("input", e => {
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fNote") S.form.note = t.value;
   else if (t.id === "revText" && S.revDraft) S.revDraft.text = t.value;
+  else if (S.ns && t.id === "nsName") { S.ns.name = t.value; if (!S.ns.slugTouched) { S.ns.slug = translit(t.value); const e = document.getElementById("nsSlug"); if (e) e.value = S.ns.slug; } }
+  else if (S.ns && t.id === "nsCity") S.ns.city = t.value;
+  else if (S.ns && t.id === "nsPhone") S.ns.phone = t.value;
+  else if (S.ns && t.id === "nsEmail") S.ns.email = t.value;
+  else if (S.ns && t.id === "nsSlug") { S.ns.slug = t.value.toLowerCase().replace(/[^a-z0-9-]/g, ""); S.ns.slugTouched = true; }
+  else if (S.acc && t.id === "acEmail") S.acc.email = t.value;
+  else if (S.acc && t.id === "acPrice") S.acc.price = t.value.replace(/\D/g, "");
+  else if (S.bill && t.id === "biPrice") S.bill.price = Number(t.value.replace(/\D/g, "")) || 0;
+  else if (S.bill && t.id === "biTrial") S.bill.trialDays = Math.min(365, Number(t.value.replace(/\D/g, "")) || 0);
+  else if (S.bill && t.id === "biPhone") S.bill.phone = t.value;
+  else if (S.bill && t.id === "biBank") S.bill.bank = t.value;
+  else if (S.bill && t.id === "biRecip") S.bill.recipient = t.value;
   else if (S.mb && t.id === "mbName") S.mb.name = t.value;
   else if (S.mb && t.id === "mbPhone") S.mb.phone = t.value;
   else if (S.mb && t.id === "mbNote") S.mb.note = t.value;
@@ -1397,7 +1652,7 @@ async function saveAvatar(id, file) {
     ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 240, 240);
     let q = 0.85, out = c.toDataURL("image/jpeg", q);
     while (out.length > 45000 && q > 0.4) { q -= 0.1; out = c.toDataURL("image/jpeg", q); }
-    await setDoc(doc(db, "avatars", id), { img: out, updated: Date.now() });
+    await setDoc(SD("avatars", id), { img: out, updated: Date.now() });
     AVATARS[id] = out; toast("Фото профиля сохранено");
   } catch (err) { toast(err && err.message === "bad image" ? "Не удалось открыть фото. Попробуйте другое." : errText(err)); }
   S.avBusy = false; render(true);
@@ -1410,6 +1665,84 @@ async function usePickedPhoto(file) {
       S.workDraft = { thumb: toJpeg(img, 420, 60000), img: toJpeg(img, 1280, 700000), title: "", cat: firstCat, artist: ROLE === "master" ? MY_ARTIST : (S.gMaster !== "all" ? S.gMaster : (SET.artists[0] || {}).id) };
     } catch (err) { toast("Не удалось открыть фото. Попробуйте другое."); }
     S.wBusy = false; render(true);
+}
+
+/* ================= writes: salons & subscription ================= */
+function toQr(img) {
+  const side = Math.min(img.width, img.height), c = document.createElement("canvas"); c.width = c.height = 360;
+  const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 360, 360);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 360, 360);
+  return c.toDataURL("image/png");
+}
+async function createSalon() {
+  const N = S.ns; S.nsErr = "";
+  const slug = (N.slug || "").replace(/^-+|-+$/g, ""), email = (N.email || "").trim().toLowerCase();
+  if (!N.name.trim()) S.nsErr = "Укажите название салона";
+  else if (!/^[a-z0-9][a-z0-9-]{2,29}$/.test(slug) || slug === "main") S.nsErr = "Адрес ссылки: от 3 латинских букв или цифр (можно дефис)";
+  else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) S.nsErr = "Укажите email владельца";
+  if (S.nsErr) { render(true); return; }
+  S.saving = true; render(true);
+  try {
+    const ex = await getDocFromServer(doc(db, "salons", slug));
+    if (ex.exists()) { S.nsErr = "Такой адрес ссылки уже занят — придумайте другой"; S.saving = false; render(true); return; }
+    const now = Date.now(), base = defaultSettings();
+    const st = Object.assign(base, { name: N.name.trim().slice(0, 60), area: N.city.trim().slice(0, 80), phone: N.phone.trim().slice(0, 25), logo: "",
+      artists: [{ id: "a1", name: "Мастер 1" }], services: N.copy && SET ? clone(SET.services) : base.services });
+    const batch = writeBatch(db);
+    batch.set(doc(db, "salons", slug), { name: st.name, city: st.area, created: now, until: now + (Number(billing().trialDays) || 7) * DAY,
+      free: false, paused: false, paidOnce: false, payClaim: null, rejected: false, price: null, paidLog: [] });
+    batch.set(doc(db, "salonsPrivate", slug), { ownerEmail: email });
+    batch.set(doc(db, "salons", slug, "settings", "salon"), st);
+    await batch.commit();
+    toast("Салон создан. Отправьте владельцу ссылку для входа.");
+    S.ns = null; S.saving = false; S.accSid = slug; S.acc = null; go("salonAccess"); return;
+  } catch (err) { S.nsErr = errText(err); }
+  S.saving = false; render(true);
+}
+async function salonAdminUpdate(what) {
+  const m = SALONS.find(x => x.id === S.accSid); if (!m) return;
+  try {
+    if (what === "email") {
+      const em = (S.acc.email || "").trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { toast("Проверьте email"); return; }
+      await setDoc(doc(db, "salonsPrivate", m.id), { ownerEmail: em }); toast("Email владельца сохранён");
+    } else if (what === "price") {
+      const pr = Number(S.acc.price) || null; await updateDoc(doc(db, "salons", m.id), { price: pr }); toast(pr ? "Своя цена: " + rub(pr) : "Обычная цена");
+    } else if (what === "month") {
+      await updateDoc(doc(db, "salons", m.id), { until: addMonths(Math.max(m.until || 0, Date.now()), 1) }); toast("Добавлен бесплатный месяц");
+    } else if (what === "free") {
+      await updateDoc(doc(db, "salons", m.id), { free: !m.free }); toast(m.free ? "Салон снова платный" : "Салон бесплатный навсегда");
+    } else if (what === "pause") {
+      await updateDoc(doc(db, "salons", m.id), { paused: !m.paused }); toast(m.paused ? "Салон снова работает" : "Салон приостановлен");
+    }
+  } catch (err) { toast(errText(err)); }
+  render(true);
+}
+async function confirmPayment(sid, ok) {
+  const m = SALONS.find(x => x.id === sid); if (!m || !m.payClaim) return;
+  const c = m.payClaim, now = Date.now();
+  try {
+    if (ok) await updateDoc(doc(db, "salons", sid), { until: addMonths(Math.max(m.until || 0, now), Number(c.months) || 1), paidOnce: true, payClaim: null, rejected: false,
+      paidLog: (m.paidLog || []).concat({ amount: Number(c.amount) || 0, months: Number(c.months) || 1, at: now }).slice(-60) });
+    else await updateDoc(doc(db, "salons", sid), { payClaim: null, rejected: true });
+    toast(ok ? "Подписка продлена: " + (m.name || sid) : "Салону показано: перевод не найден");
+  } catch (err) { toast(errText(err)); }
+}
+async function claimPayment() {
+  const x = SUB(), n = S.subN || 1;
+  S.saving = true; render(true);
+  try { await updateDoc(doc(db, "salons", SID), { payClaim: { months: n, amount: x.price * n, at: Date.now() }, rejected: false }); toast("Спасибо! Ждём подтверждения оплаты."); }
+  catch (err) { toast(errText(err)); }
+  S.saving = false; render(true);
+}
+async function saveBilling() {
+  const B = S.bill;
+  if (!(B.price > 0)) { toast("Укажите цену"); return; }
+  S.saving = true; render(true);
+  try { await setDoc(doc(db, "billing", "config"), { price: B.price, trialDays: B.trialDays || 7, phone: (B.phone || "").trim(), bank: (B.bank || "").trim(), recipient: (B.recipient || "").trim(), qr: B.qr || "" }); toast("Сохранено"); S.bill = null; S.saving = false; go("salons"); return; }
+  catch (err) { toast(errText(err)); }
+  S.saving = false; render(true);
 }
 
 /* ================= writes ================= */
@@ -1426,7 +1759,7 @@ async function book() {
   if (artist === "any") artist = freeArtists(S.date, S.time, dur)[0];
   const chair = selNeedsChair();
   if (!artist || !artistFree(artist, S.date, S.time, dur) || (chair && !chairFree(S.date, S.time, dur))) { toast("Это время только что заняли. Выберите другое."); S.time = null; go("time"); return; }
-  const id = doc(collection(db, "bookings")).id;
+  const id = doc(SC("bookings")).id;
   const now = Date.now();
   const services = S.sel.filter(svcById);
   const data = {
@@ -1438,8 +1771,8 @@ async function book() {
   S.saving = true; render(true);
   const save = async () => {
     const batch = writeBatch(db);
-    batch.set(doc(db, "bookings", id), data);
-    batch.set(doc(db, "busy", id), { date: data.date, start: data.start, dur: data.dur, artist: data.artist, ...(chair ? { chair: true } : {}) });
+    batch.set(SD("bookings", id), data);
+    batch.set(SD("busy", id), { date: data.date, start: data.start, dur: data.dur, artist: data.artist, ...(chair ? { chair: true } : {}) });
     await batch.commit();
   };
   try {
@@ -1451,7 +1784,7 @@ async function book() {
     }
   } catch (err) { S.saving = false; toast(errText(err)); render(true); return; }
   S.saving = false;
-  const ids = lsGet("nb-my", []); ids.unshift(id); lsSet("nb-my", ids.slice(0, 30));
+  const ids = lsGet(lsk("nb-my"), []); ids.unshift(id); lsSet(lsk("nb-my"), ids.slice(0, 30));
   MY[id] = Object.assign({ id }, data); watchMine();
   S.lastBooked = data.status; S.bookTab = "upcoming";
   Object.assign(S, { sel: [], artist: "any", date: null, time: null, tried: false, form: { name: f.name, phone: f.phone, note: "" } });
@@ -1460,8 +1793,8 @@ async function book() {
 async function cancelBooking(id) {
   try {
     const batch = writeBatch(db);
-    batch.update(doc(db, "bookings", id), { status: "cancelled", updated: Date.now() });
-    batch.delete(doc(db, "busy", id));
+    batch.update(SD("bookings", id), { status: "cancelled", updated: Date.now() });
+    batch.delete(SD("busy", id));
     await batch.commit();
     toast("Запись отменена");
   } catch (err) { toast(errText(err)); }
@@ -1472,8 +1805,8 @@ async function moveBooking(id, artist) {
   if (!b || !artistFree(artist, b.date, b.start, b.dur, b.id)) { toast("У этого мастера уже занято"); render(true); return; }
   try {
     const batch = writeBatch(db);
-    batch.update(doc(db, "bookings", id), { artist, anyArtist: false, updated: Date.now() });
-    batch.update(doc(db, "busy", id), { artist });
+    batch.update(SD("bookings", id), { artist, anyArtist: false, updated: Date.now() });
+    batch.update(SD("busy", id), { artist });
     await batch.commit();
     toast("Запись передана: " + artistName(artist));
   } catch (err) { toast(errText(err)); }
@@ -1535,16 +1868,16 @@ async function publishWork() {
   if (!artist) { toast("Выберите мастера"); return; }
   S.wBusy = true; render(true);
   try {
-    const id = doc(collection(db, "works")).id, batch = writeBatch(db);
-    batch.set(doc(db, "works", id), { artist, cat: D.cat, title: (D.title || "").trim().slice(0, 60), thumb: D.thumb, created: Date.now(), hidden: false });
-    batch.set(doc(db, "workImages", id), { img: D.img });
+    const id = doc(SC("works")).id, batch = writeBatch(db);
+    batch.set(SD("works", id), { artist, cat: D.cat, title: (D.title || "").trim().slice(0, 60), thumb: D.thumb, created: Date.now(), hidden: false });
+    batch.set(SD("workImages", id), { img: D.img });
     await batch.commit();
     FULL[id] = D.img; S.workDraft = null; toast("Фото опубликовано. Клиенты уже видят его.");
   } catch (err) { toast(errText(err)); }
   S.wBusy = false; render(true);
 }
 async function deleteWork(id) {
-  try { const batch = writeBatch(db); batch.delete(doc(db, "works", id)); batch.delete(doc(db, "workImages", id)); await batch.commit(); toast("Фото удалено"); }
+  try { const batch = writeBatch(db); batch.delete(SD("works", id)); batch.delete(SD("workImages", id)); await batch.commit(); toast("Фото удалено"); }
   catch (err) { toast(errText(err)); }
   S.armed = null; render(true);
 }

@@ -138,5 +138,162 @@ service cloud.firestore {
         && request.resource.data.img is string && request.resource.data.img.size() < 900000;
       allow delete: if isOwner() || (myArtist() != '' && get(/databases/$(database)/documents/works/$(id)).data.artist == myArtist());
     }
+
+    // ===================== Другие салоны (salons/<id>) =====================
+    // Реестр салонов: видят все (статус подписки нужен клиентам); меняет администратор.
+    // Владелец салона может только сообщить об оплате (payClaim).
+    function isAdmin() { return isOwner(); }
+    match /billing/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /salonsPrivate/{sid} {
+      allow read: if isAdmin() || (staffEmail() != '' && resource.data.ownerEmail == staffEmail());
+      allow write: if isAdmin();
+    }
+    match /salons/{sid} {
+      function sOwner() {
+        return isAdmin() || (staffEmail() != ''
+          && get(/databases/$(database)/documents/salonsPrivate/$(sid)).data.get('ownerEmail', '') == staffEmail());
+      }
+      function sArtist() {
+        return staffEmail() == '' ? ''
+          : get(/databases/$(database)/documents/salons/$(sid)/private/staff).data.get('map', {}).get(staffEmail(), '');
+      }
+      function sActive() {
+        let m = get(/databases/$(database)/documents/salons/$(sid)).data;
+        return m.get('free', false) == true
+          || (m.get('paused', false) == false && request.time.toMillis() < m.get('until', 0) + 259200000);
+      }
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (sOwner()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payClaim', 'rejected'])
+        && request.resource.data.rejected == false
+        && request.resource.data.payClaim.keys().hasOnly(['months', 'amount', 'at'])
+        && request.resource.data.payClaim.months in [1, 3, 6]
+        && request.resource.data.payClaim.amount is number);
+
+      // Настройки салона: читают все, меняет только владелец
+      match /settings/{docId} {
+        allow read: if true;
+        allow write: if sOwner();
+      }
+
+      // Список email мастеров: видят владелец и мастера, меняет только владелец
+      match /private/{docId} {
+        allow read: if sOwner() || (docId == 'staff' && sArtist() != '');
+        allow write: if sOwner();
+      }
+
+      // Записи клиентов (подтверждаются сразу, если в настройках включено «Подтверждать автоматически»)
+      match /bookings/{id} {
+        // Клиент открывает свою запись только по её секретному номеру.
+        // Список: владелец — все записи, мастер — только свои.
+        allow get: if true;
+        allow list: if sOwner() || (sArtist() != '' && resource.data.artist == sArtist());
+
+        allow create: if sActive()
+          && request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated','chair'])
+          && request.resource.data.get('chair', false) is bool
+          && (request.resource.data.status == 'pending'
+              || (request.resource.data.status == 'confirmed'
+                  && (sOwner()
+                      || (sArtist() != '' && request.resource.data.artist == sArtist())
+                      || get(/databases/$(database)/documents/salons/$(sid)/settings/salon).data.get('autoConfirm', true) == true)))
+          && request.resource.data.date is string && request.resource.data.date.size() == 10
+          && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
+          && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
+          && request.resource.data.artist is string && request.resource.data.artist.size() < 40
+          && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60
+          && request.resource.data.phone is string && request.resource.data.phone.size() <= 25
+          && request.resource.data.note is string && request.resource.data.note.size() <= 250
+          && request.resource.data.services is list && request.resource.data.services.size() <= 20
+          && request.resource.data.serviceNames is list && request.resource.data.serviceNames.size() <= 20;
+
+        // Владелец меняет что угодно; клиент может только отменить; мастер — подтвердить или отменить свою запись
+        allow update: if sOwner()
+          || (
+            resource.data.status != 'cancelled'
+            && request.resource.data.status == 'cancelled'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+          )
+          || (
+            sArtist() != '' && resource.data.artist == sArtist()
+            && request.resource.data.status in ['confirmed', 'cancelled']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updated'])
+          );
+        allow delete: if sOwner();
+      }
+
+      // Занятое время (без имён и телефонов) — нужно всем, чтобы показывать свободные окна
+      match /busy/{id} {
+        allow read: if true;
+        allow create: if sOwner() || (
+          request.resource.data.keys().hasOnly(['date','start','dur','artist','chair'])
+          && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.get('chair', false)
+          && getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status in ['pending', 'confirmed']
+          && request.resource.data.date == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.date
+          && request.resource.data.start == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.start
+          && request.resource.data.dur == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.dur
+          && request.resource.data.artist == getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.artist
+        );
+        allow update: if sOwner();
+        allow delete: if sOwner() || getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status == 'cancelled';
+      }
+
+      // Фото работ: видят все; добавляет владелец или мастер (только свои); скрывает владелец
+      match /works/{id} {
+        allow read: if true;
+        allow create: if (sOwner() || (sArtist() != '' && request.resource.data.artist == sArtist()))
+          && request.resource.data.keys().hasOnly(['artist','cat','title','thumb','created','hidden'])
+          && request.resource.data.artist is string && request.resource.data.artist.size() < 40
+          && request.resource.data.cat is string && request.resource.data.cat.size() < 40
+          && request.resource.data.title is string && request.resource.data.title.size() <= 60
+          && request.resource.data.thumb is string && request.resource.data.thumb.size() < 120000
+          && request.resource.data.hidden == false;
+        allow update: if sOwner();
+        allow delete: if sOwner() || (sArtist() != '' && resource.data.artist == sArtist());
+      }
+      // Отзывы: видят все. Оставить может только клиент после подтверждённого визита —
+      // номер отзыва = номер его записи (секретный), один отзыв на одну запись.
+      // Изменить или удалить может только владелец салона.
+      match /reviews/{id} {
+        allow read: if true;
+        allow create: if exists(/databases/$(database)/documents/salons/$(sid)/bookings/$(id))
+          && get(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.status == 'confirmed'
+          && request.time > timestamp.date(
+               int(get(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.date[0:4]),
+               int(get(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.date[5:7]),
+               int(get(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.date[8:10]))
+          && request.resource.data.keys().hasOnly(['artist','name','rating','text','created','edited'])
+          && request.resource.data.artist == get(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.artist
+          && request.resource.data.name == get(/databases/$(database)/documents/salons/$(sid)/bookings/$(id)).data.name
+          && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+          && request.resource.data.text is string && request.resource.data.text.size() <= 500
+          && request.resource.data.edited == false;
+        allow update: if sOwner()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating','text','edited','updated'])
+          && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+          && request.resource.data.text is string && request.resource.data.text.size() <= 500
+          && request.resource.data.edited == true;
+        allow delete: if sOwner();
+      }
+      // Фото профиля мастера: видят все; меняет владелец или сам мастер (только своё)
+      match /avatars/{artistId} {
+        allow read: if true;
+        allow write: if (sOwner() || (sArtist() != '' && artistId == sArtist()))
+          && request.resource.data.keys().hasOnly(['img','updated'])
+          && request.resource.data.img is string && request.resource.data.img.size() < 80000;
+      }
+      // Фото в полном размере (отдельно, чтобы галерея грузилась быстро)
+      match /workImages/{id} {
+        allow read: if true;
+        allow create: if (sOwner() || (sArtist() != '' && getAfter(/databases/$(database)/documents/salons/$(sid)/works/$(id)).data.artist == sArtist()))
+          && request.resource.data.keys().hasOnly(['img'])
+          && request.resource.data.img is string && request.resource.data.img.size() < 900000;
+        allow delete: if sOwner() || (sArtist() != '' && get(/databases/$(database)/documents/salons/$(sid)/works/$(id)).data.artist == sArtist());
+      }
+    }
   }
 }
