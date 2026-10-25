@@ -44,6 +44,7 @@ const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == n
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
 const ICON = {
+  sms: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8M8 13h5"/></svg>',
   back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
   next: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
@@ -196,6 +197,8 @@ function waNumber(phone) {
 const tgUser = t => String(t || "").trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "").replace(/[^A-Za-z0-9_]/g, "");
 const appLink = () => location.origin + location.pathname;
 function waLink(phone, text) { const n = waNumber(phone); return n ? "https://wa.me/" + n + "?text=" + encodeURIComponent(text) : ""; }
+// SMS: opens the phone's own Messages app with the text filled in (free; sent from the phone's normal SIM)
+function smsLink(phone, text) { const n = waNumber(phone); return n ? "sms:+" + n + "?&body=" + encodeURIComponent(text) : ""; }
 function tgLink(user, text) {
   const u = tgUser(user);
   return u ? "https://t.me/" + u + "?text=" + encodeURIComponent(text)
@@ -212,14 +215,15 @@ function msgToClient(b) {
   if (b.status === "cancelled") return "Здравствуйте, " + (b.name || "") + "! К сожалению, ваша запись в «" + salon + "» на " + longDate(b.date).toLowerCase() + " в " + hm(b.start) + " отменена. Выберите другое время: " + appLink();
   return "Здравствуйте, " + (b.name || "") + "! Ваша запись в «" + salon + "» подтверждена: " + bookingLine(b) + "." + (SET && SET.area ? " Адрес: " + SET.area + "." : "") + " Ждём вас!";
 }
-function msgButtons(label, wa, tg) {
-  if (!wa && !tg) return "";
-  return `<div class="stack" style="gap:6px"><span class="tiny muted" style="font-weight:600">${label}</span><div class="btns">
+function msgButtons(label, wa, tg, sms) {
+  if (!wa && !tg && !sms) return "";
+  return `<div class="stack" style="gap:6px"><span class="tiny muted" style="font-weight:600">${label}</span><div class="msgbtns">
     ${wa ? `<a class="btn sm ghost msg-wa" href="${esc(wa)}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a>` : ""}
-    ${tg ? `<a class="btn sm ghost msg-tg" href="${esc(tg)}" target="_blank" rel="noopener">${ICON.tg}Telegram</a>` : ""}</div></div>`;
+    ${tg ? `<a class="btn sm ghost msg-tg" href="${esc(tg)}" target="_blank" rel="noopener">${ICON.tg}Telegram</a>` : ""}
+    ${sms ? `<a class="btn sm ghost msg-sms" href="${esc(sms)}">${ICON.sms}SMS</a>` : ""}</div></div>`;
 }
-const salonMsgButtons = b => msgButtons("Написать салону", waLink(SET.phone, msgToSalon(b)), tgLink(SET.telegram, msgToSalon(b)));
-const clientMsgButtons = b => b.phone ? msgButtons(b.status === "cancelled" ? "Сообщить клиенту об отмене" : "Сообщить клиенту о записи", waLink(b.phone, msgToClient(b)), tgLink("", msgToClient(b))) : "";
+const salonMsgButtons = b => msgButtons("Написать салону", waLink(SET.phone, msgToSalon(b)), tgLink(SET.telegram, msgToSalon(b)), smsLink(SET.phone, msgToSalon(b)));
+const clientMsgButtons = b => b.phone ? msgButtons(b.status === "cancelled" ? "Сообщить клиенту об отмене" : "Сообщить клиенту о записи", waLink(b.phone, msgToClient(b)), tgLink("", msgToClient(b)), smsLink(b.phone, msgToClient(b))) : "";
 
 /* ================= toast ================= */
 let toastTimer;
@@ -581,7 +585,7 @@ function vBookings() {
   const list = S.bookTab === "upcoming" ? up : past;
   const first = (CATS.find(c => SET.services.some(s => s.cat === c.id)) || CATS[0]).id;
   return `<h1 class="h1" style="font-size:26px">Мои записи</h1>
-  ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">${S.lastBooked === "pending" ? "Салон скоро подтвердит запись. Статус обновится здесь." : "Запись подтверждена. Ждём вас!"} Можно также отправить запись салону в WhatsApp или Telegram — кнопки ниже.</div></div></div>` : ""}
+  ${S.lastBooked ? `<div class="notice" role="status"><div class="dot">${ICON.check}</div><div><b>Вы записаны!</b><div class="small">${S.lastBooked === "pending" ? "Салон скоро подтвердит запись. Статус обновится здесь." : "Запись подтверждена. Ждём вас!"} Можно также отправить запись салону в WhatsApp, Telegram или по SMS — кнопки ниже.</div></div></div>` : ""}
   <div class="seg" role="group" aria-label="Показать"><button data-act="btab" data-v="upcoming" aria-pressed="${S.bookTab === "upcoming"}">Предстоящие</button><button data-act="btab" data-v="past" aria-pressed="${S.bookTab === "past"}">Прошедшие и отменённые</button></div>
   <div class="list">${list.length ? list.map(bookingCard).join("") : `<div class="empty">${S.bookTab === "upcoming" ? "Предстоящих записей пока нет." : "Здесь пока ничего нет."}</div>`}</div>
   <p class="tiny muted">Записи сохраняются на этом телефоне. Если вы записывались с другого телефона, они будут видны там.</p>
