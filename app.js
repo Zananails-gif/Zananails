@@ -1032,7 +1032,7 @@ function vJournal() {
   ${isClosed(k) ? `<div class="empty">Выходной день.</div>` : `
   <div class="jgrid">
     <div class="jcols" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${ARTS.map(a => `<span>${esc(a.name)}</span>`).join("")}</div>
-    <div class="jbody" style="height:${(CLOSE - OPEN) / 60 * H + 8}px;margin-top:8px">${hours}${vlines}${blocks}${nowLine}</div>
+    <div class="jbody" style="height:${(CLOSE - OPEN) / 60 * H + 8}px;margin-top:8px">${hours}${vlines}${k >= todayKey() ? jSlots(ARTS, OPEN, CLOSE, H, colW, k) : ""}${blocks}${nowLine}</div>
   </div>`}
   <div class="legend"><span><i style="background:var(--accent-soft);outline:1.5px dashed var(--accent)"></i>Новая, ждёт подтверждения</span><span><i style="background:var(--accent-soft)"></i>Подтверждена</span></div>`;
 }
@@ -1043,7 +1043,11 @@ function vManual() {
   const chair = sel.some(id => svcById(id).cat === PEDI_CAT);
   const slots = M.artist && dur ? slotsFor(M.date, M.artist, dur, chair, true) : [];
   const cats = CATS.filter(c => SET.services.some(x => x.cat === c.id));
+  const picked = M.picked && M.time != null;
+  const pickedNote = !picked ? "" : !dur ? `<div class="note" style="margin:0">${ICON.info}<span>Время <b>${hm(M.time)}</b>${own ? "" : ", мастер <b>" + esc(artistName(M.artist)) + "</b>"} — выбрано в журнале. Выберите услуги.</span></div>`
+    : slots.includes(M.time) ? "" : `<div class="err-box" role="alert">На ${hm(M.time)} эти услуги не помещаются — у мастера занято${chair ? " или занято педикюрное кресло" : ""}. Выберите другое время ниже.</div>`;
   return `${header("", "Запись клиента", "journal")}
+  ${pickedNote}
   ${own ? "" : `<div class="card stack"><b>Мастер</b>${chips("mb-artist", SET.artists.map(a => [a.id, a.name]), M.artist, "Мастер")}</div>`}
   <div class="card stack"><b>Услуги</b>
     ${cats.map(c => `<div class="tiny muted" style="font-weight:700;margin-bottom:-4px">${esc(c.id)}</div>
@@ -1065,7 +1069,9 @@ function vManual() {
     <label class="field" for="mbNote">Комментарий (необязательно)<input id="mbNote" maxlength="250" autocomplete="off" value="${esc(M.note)}" placeholder="Например: записалась по телефону"></label>
   </div>`;
 }
-const barManual = () => { const M = S.mb, ok = M && M.artist && M.sel.length && M.time != null;
+const mbSlotOk = M => { const sel = M.sel.filter(svcById), dur = sel.reduce((n, id) => n + svcById(id).dur, 0);
+  return dur > 0 && slotsFor(M.date, M.artist, dur, sel.some(id => svcById(id).cat === PEDI_CAT), true).includes(M.time); };
+const barManual = () => { const M = S.mb, ok = M && M.artist && M.sel.length && M.time != null && mbSlotOk(M);
   return `<div class="cta wrap"><button class="btn" style="flex:1" data-act="mb-save" ${!ok || S.saving ? "disabled" : ""}>${S.saving ? "Сохраняем…" : ok ? "Записать на " + hm(M.time) : "Выберите услуги и время"}</button></div>`; };
 async function saveManual() {
   const M = S.mb; S.tried = true;
@@ -1088,6 +1094,16 @@ async function saveManual() {
     S.saving = false; S.tried = false; S.mb = null; S.jDate = data.date; watchJday(); go("journal"); return;
   } catch (err) { toast(errText(err)); }
   S.saving = false; render(true);
+}
+// empty half-hour cells in the journal: tap one to book a client for that master at that time
+function jSlots(ARTS, OPEN, CLOSE, H, colW, k) {
+  let out = "";
+  ARTS.forEach((a, i) => {
+    for (let t = OPEN; t < CLOSE; t += STEP) {
+      out += `<button class="jslot" data-act="mb-at" data-v="${esc(a.id)}|${t}" style="top:${(t - OPEN) / 60 * H}px;height:${STEP / 60 * H}px;left:calc(44px + ${i} * ${colW});width:${colW}" aria-label="Записать клиента: ${esc(a.name)}, ${hm(t)}"><span>+ ${hm(t)}</span></button>`;
+    }
+  });
+  return out;
 }
 function vInbox() {
   const pending = PENDING.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
@@ -1522,9 +1538,12 @@ document.addEventListener("click", async e => {
     case "sub-n": S.subN = +v; render(true); break;
     case "sub-claim": claimPayment(); break;
     case "mb-new": S.mb = { artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: S.jDate < todayKey() ? todayKey() : S.jDate, time: null, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break;
-    case "mb-artist": if (S.mb) { S.mb.artist = v; S.mb.time = null; render(true); } break;
-    case "mb-svc": if (S.mb) { S.mb.sel = S.mb.sel.includes(v) ? S.mb.sel.filter(x => x !== v) : S.mb.sel.concat(v); S.mb.time = null; render(true); } break;
-    case "mb-time": if (S.mb) { S.mb.time = +v; render(true); } break;
+    case "mb-artist": if (S.mb) { S.mb.artist = v; if (!S.mb.picked) S.mb.time = null; render(true); } break;
+    case "mb-svc": if (S.mb) { S.mb.sel = S.mb.sel.includes(v) ? S.mb.sel.filter(x => x !== v) : S.mb.sel.concat(v); if (!S.mb.picked) S.mb.time = null; render(true); } break;
+    case "mb-at": { const [aid, t] = v.split("|");
+      if (ROLE === "master" && aid !== MY_ARTIST) break;
+      S.mb = { artist: aid, sel: [], date: S.jDate, time: +t, picked: true, name: "", phone: "", note: "" }; S.tried = false; go("manual"); break; }
+    case "mb-time": if (S.mb) { S.mb.time = +v; S.mb.picked = false; render(true); } break;
     case "mb-save": saveManual(); break;
     case "jday": S.jDate = addDays(S.jDate, Number(v)); watchJday(); render(true); break;
     case "jtoday": S.jDate = todayKey(); watchJday(); render(true); break;
@@ -1609,7 +1628,7 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("change", async e => {
-  if (e.target.id === "mbDate" && S.mb && e.target.value) { S.mb.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.mb.time = null; render(true); return; }
+  if (e.target.id === "mbDate" && S.mb && e.target.value) { S.mb.date = e.target.value < todayKey() ? todayKey() : e.target.value; S.mb.time = null; S.mb.picked = false; render(true); return; }
   const t = e.target;
   if (t.dataset.d && t.tagName === "SELECT") t.dispatchEvent(new Event("input", { bubbles: true }));
   if (t.id === "logoFile" && t.files && t.files[0]) {
