@@ -660,6 +660,62 @@ function normPhone(p) { let d = String(p || "").replace(/\D/g, ""); if (d.length
 async function readDikidi(file) {
   const X = await loadXlsx();
   const wb = X.read(await file.arrayBuffer(), { type: "array", raw: false });
+  if (wb.SheetNames.some(n => /^\d{1,2}\.\d{1,2}\.\d{4}$/.test(n.trim()))) return { kind: "book", list: readDikidiJournal(X, wb) };
+  return { kind: "cl", list: readDikidiClients(X, wb) };
+}
+const normTxt = t => String(t || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").trim();
+// DIKIDI «Записи → Экспорт»: one sheet per day, first row = masters, cells = "10:00 - 12:00    (2000 RUB)\nИмя\n7900…\nУслуги\nКомментарий"
+function readDikidiJournal(X, wb) {
+  const out = [];
+  wb.SheetNames.forEach(sn => {
+    const date = ruDateKey(sn); if (!date) return;
+    const rows = X.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: false, defval: "" }); if (!rows.length) return;
+    const H = rows[0].map(c => String(c).trim());
+    rows.slice(1).forEach(r => r.forEach((cell, i) => {
+      if (!i || !String(cell).trim() || !H[i]) return;
+      const L = String(cell).split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      const m = (L[0] || "").match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})(?:.*?\((\d[\d\s]*)[^)]*\))?/); if (!m) return;
+      const start = +m[1] * 60 + +m[2], end = +m[3] * 60 + +m[4], dur = end - start; if (dur <= 0 || dur > 600) return;
+      const rest = L.slice(1), base = { date, start, dur, master: H[i] };
+      if (m[5] == null && !rest.some(x => /^\+?\d[\d\s()-]{8,}$/.test(x))) { out.push(Object.assign(base, { brk: true, label: rest.join(" ").slice(0, 40) || "Личное время" })); return; }
+      const name = (rest.shift() || "Клиент").slice(0, 60);
+      const phone = rest.length && /^\+?\d[\d\s()-]{6,}$/.test(rest[0]) ? normPhone(rest.shift()) : "";
+      out.push(Object.assign(base, { name, phone, svcText: rest.shift() || "", note: rest.join(" ").slice(0, 250), total: m[5] != null ? Number(m[5].replace(/\s/g, "")) : 0 }));
+    }));
+  });
+  return out.sort((a, b) => (a.date + hm(a.start)).localeCompare(b.date + hm(b.start)));
+}
+// "Маникюр с укреплением гель, Педикюр с покрытием, без обработки стопы" -> our services (names may contain commas)
+function matchSvcs(text) {
+  const parts = String(text || "").split(/,\s*/).filter(Boolean), byName = {};
+  (SET ? SET.services : []).forEach(sv => { byName[normTxt(sv.name)] = sv; });
+  const ids = [], names = []; let i = 0;
+  while (i < parts.length) {
+    let hit = 0;
+    for (let j = parts.length; j > i; j--) { const sv = byName[normTxt(parts.slice(i, j).join(", "))]; if (sv) { ids.push(sv.id); names.push(sv.name); hit = j; break; } }
+    if (hit) i = hit; else { names.push(parts[i]); i++; }
+  }
+  return { ids, names: names.length ? names.slice(0, 20) : ["Запись из DIKIDI"] };
+}
+function dkMasterGuess(name) {
+  const n = normTxt(name).split(" ")[0];
+  const a = (SET ? SET.artists : []).find(x => normTxt(bareName(x.name)).split(" ")[0] === n) || (SET ? SET.artists : []).find(x => normTxt(x.name).includes(n));
+  return a ? a.id : "";
+}
+// what will happen to each row of the bookings file (recomputed on every render: the journal may change meanwhile)
+function planBookings(I) {
+  const taken = [], today = todayKey(), now = nowMin();
+  return I.list.map(r => {
+    const artist = I.map[r.master] || "";
+    let why = "";
+    if (!artist) why = "мастер не выбран";
+    else if (r.date < today || (r.date === today && r.start + r.dur <= now)) why = "уже прошла";
+    else if (!artistFree(artist, r.date, r.start, r.dur) || taken.some(t => t.artist === artist && t.date === r.date && r.start < t.start + t.dur && t.start < r.start + r.dur)) why = "время уже занято";
+    if (!why) taken.push({ artist, date: r.date, start: r.start, dur: r.dur });
+    return Object.assign({}, r, { artist, why });
+  });
+}
+function readDikidiClients(X, wb) {
   const rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" });
   const hi = rows.findIndex(r => r.some(c => /^имя/i.test(String(c).trim())) && r.some(c => /телефон|мобильн/i.test(String(c))));
   if (hi < 0) throw new Error("В файле нет колонок «Имя» и «Мобильный номер». Нужен файл из DIKIDI: Клиенты → Список клиентов → Excel.");
@@ -683,13 +739,19 @@ function vClientImport() {
   const I = S.imp || {};
   const top = `${header("", "Импорт из DIKIDI", "clients")}`;
   if (I.busy) return top + `<div class="card stack"><b>${esc(I.busy)}</b>${loading()}</div>`;
-  if (I.done) return top + `<div class="card stack" role="status"><b style="font-size:17px">Готово ✓</b><span>Добавлено новых клиентов: <b>${I.done.fresh}</b></span><span>Обновлено (уже были в базе): <b>${I.done.exist}</b></span></div>
-    <button class="btn" data-act="go" data-v="clients">К списку клиентов</button>`;
-  if (!I.list) return top + `<div class="card stack"><b>Перенесите клиентов из DIKIDI</b>
-    <ol class="small" style="margin:0;padding-left:20px;line-height:1.6"><li>В DIKIDI: <b>Клиенты → Список клиентов → ⋮ → Excel</b> (может только «Создатель» салона).</li><li>Нажмите кнопку ниже и выберите этот файл.</li><li>Проверьте и нажмите «Загрузить».</li></ol>
-    <span class="tiny muted">Переносятся имя, фамилия, телефон, комментарий, число записей, потраченная сумма, последний визит и день рождения. Повторы по номеру телефона не дублируются.</span></div>
+  if (I.done) return top + (I.done.book ? `<div class="card stack" role="status"><b style="font-size:17px">Готово ✓</b><span>Перенесено записей: <b>${I.done.book}</b></span>${I.done.brk ? `<span>Перерывов мастеров: <b>${I.done.brk}</b></span>` : ""}${I.done.skip ? `<span class="muted">Пропущено: ${I.done.skip}</span>` : ""}</div>
+    <button class="btn" data-act="go" data-v="journal">Открыть журнал</button><button class="btn ghost" data-act="imp-pick">Загрузить ещё файл</button>`
+    : `<div class="card stack" role="status"><b style="font-size:17px">Готово ✓</b><span>Добавлено новых клиентов: <b>${I.done.fresh}</b></span><span>Обновлено (уже были в базе): <b>${I.done.exist}</b></span></div>
+    <button class="btn" data-act="go" data-v="clients">К списку клиентов</button><button class="btn ghost" data-act="imp-pick">Загрузить ещё файл</button>`);
+  if (!I.list) return top + `<div class="card stack"><b>1. Клиенты</b>
+    <span class="small">В DIKIDI: <b>Клиенты → Список клиентов → ⋮ → Excel</b> (может только «Создатель» салона).</span>
+    <span class="tiny muted">Имя, фамилия, телефон, комментарий, число записей, сумма, последний визит, день рождения. Повторы по телефону не дублируются.</span></div>
+    <div class="card stack"><b>2. Записи</b>
+    <span class="small">В DIKIDI: <b>Записи → Экспорт</b>, период с сегодняшнего дня (до 31 дня). Если записи есть дальше — второй файл на следующий месяц.</span>
+    <span class="tiny muted">Записи попадут в журнал к своим мастерам. Прошедшие и пересекающиеся с уже существующими пропускаются, поэтому файл можно загрузить повторно без дублей.</span></div>
     ${I.err ? `<div class="err-box" role="alert">${esc(I.err)}</div>` : ""}
     <button class="btn" data-act="imp-pick">Выбрать файл (Excel или CSV)</button>`;
+  if (I.kind === "book") return top + vBookImport(I);
   const fresh = I.list.filter(r => !CLIENT_DOCS[r.key]).length, exist = I.list.length - fresh;
   return top + `<div class="stat3"><div class="card"><span class="tiny muted">В файле</span><b>${I.list.length}</b></div><div class="card"><span class="tiny muted">Новые</span><b>${fresh}</b></div><div class="card"><span class="tiny muted">Уже в базе</span><b>${exist}</b></div></div>
   <div class="card" style="padding:0">${I.list.slice(0, 8).map((r, i) => `<div class="cl-hist" style="${i ? "" : "border-top:0"}"><span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small">${esc(r.name)}</b><span class="tiny muted">${esc(r.phone || "без телефона")}${r.dk.last ? " · посл. " + esc(keyRu(r.dk.last)) : ""}</span></span><span class="tiny muted">${r.dk.visits} зап.</span></div>`).join("")}
@@ -697,6 +759,40 @@ function vClientImport() {
   <p class="tiny muted">У клиентов, которые уже есть в базе, сохранятся ваши имя, телефон и заметка — добавится только история из DIKIDI.</p>
   <button class="btn" data-act="imp-save">Загрузить ${I.list.length} ${plural(I.list.length, ["клиента", "клиента", "клиентов"])}</button>
   <button class="btn ghost" data-act="imp-pick">Выбрать другой файл</button>`;
+}
+function vBookImport(I) {
+  const plan = planBookings(I), ok = plan.filter(r => !r.why), skip = plan.filter(r => r.why);
+  const okB = ok.filter(r => !r.brk), okBr = ok.filter(r => r.brk);
+  const masters = [...new Set(I.list.map(r => r.master))];
+  const row = (r, i) => `<div class="cl-hist" style="${i ? "" : "border-top:0"}"><span class="stack" style="align-items:center;width:46px"><b>${+r.date.slice(8)}</b><span class="tiny muted">${MONG[+r.date.slice(5, 7) - 1].slice(0, 3)}</span></span>
+    <span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small">${r.brk ? "Перерыв · " + esc(r.label) : esc(r.name)}</b><span class="tiny muted">${hm(r.start)}–${hm(r.start + r.dur)} · ${esc(r.master)}${r.brk ? "" : " · " + esc(matchSvcs(r.svcText).names.join(", "))}</span>${r.why ? `<span class="tiny" style="color:var(--bad)">${esc(r.why)}</span>` : ""}</span>
+    ${r.brk ? "" : `<b class="small">${rub(r.total)}</b>`}</div>`;
+  return `<div class="stat3"><div class="card"><span class="tiny muted">В файле</span><b>${I.list.length}</b></div><div class="card"><span class="tiny muted">Перенесём</span><b>${ok.length}</b></div><div class="card"><span class="tiny muted">Пропустим</span><b>${skip.length}</b></div></div>
+  <div class="card stack"><b>Мастера</b><span class="tiny muted">Кто есть кто: мастер в DIKIDI → мастер здесь</span>
+    ${masters.map((m, k) => `<label class="field" for="impM${k}">${esc(m)}<select id="impM${k}" data-imp-master="${esc(m)}"><option value="">— не переносить —</option>${SET.artists.map(a => `<option value="${esc(a.id)}" ${I.map[m] === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>`).join("")}</div>
+  ${ok.length ? `<h2 class="h2">Будут перенесены</h2><div class="card" style="padding:0">${ok.slice(0, 12).map(row).join("")}${ok.length > 12 ? `<div class="cl-hist tiny muted">…и ещё ${ok.length - 12}</div>` : ""}</div>` : ""}
+  ${skip.length ? `<h2 class="h2">Пропустим</h2><div class="card" style="padding:0">${skip.slice(0, 20).map(row).join("")}${skip.length > 20 ? `<div class="cl-hist tiny muted">…и ещё ${skip.length - 20}</div>` : ""}</div>` : ""}
+  <p class="tiny muted">Клиентам ничего не отправляется. Клиенты из записей сами появятся в базе клиентов.</p>
+  ${ok.length ? `<button class="btn" data-act="imp-save">Перенести ${okB.length} ${plural(okB.length, ["запись", "записи", "записей"])}${okBr.length ? " и " + okBr.length + " " + plural(okBr.length, ["перерыв", "перерыва", "перерывов"]) : ""}</button>` : ""}
+  <button class="btn ghost" data-act="imp-pick">Выбрать другой файл</button>`;
+}
+async function saveBookImport() {
+  const plan = planBookings(S.imp).filter(r => !r.why), skip = S.imp.list.length - plan.length; let nb = 0, nr = 0;
+  for (let i = 0; i < plan.length; i += 200) {
+    S.imp.busy = `Переносим… ${Math.min(i + 200, plan.length)} из ${plan.length}`; render(true);
+    const batch = writeBatch(db), now = Date.now();
+    plan.slice(i, i + 200).forEach(r => {
+      const id = doc(SC("bookings")).id;
+      if (r.brk) { nr++; batch.set(SD("busy", id), { date: r.date, start: r.start, dur: r.dur, artist: r.artist, brk: true, label: r.label }); return; }
+      const sv = matchSvcs(r.svcText), chair = sv.ids.some(x => (svcById(x) || {}).cat === PEDI_CAT) || /педикюр/i.test(r.svcText);
+      batch.set(SD("bookings", id), { date: r.date, start: r.start, dur: r.dur, artist: r.artist, anyArtist: false, services: sv.ids, serviceNames: sv.names,
+        total: Math.round(r.total || 0), name: r.name, phone: r.phone, note: r.note, status: "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {}) });
+      batch.set(SD("busy", id), { date: r.date, start: r.start, dur: r.dur, artist: r.artist, ...(chair ? { chair: true } : {}) });
+      nb++;
+    });
+    await batch.commit();
+  }
+  S.imp = { done: { book: nb, brk: nr, skip } }; CL_BOOK = null;
 }
 async function saveImport() {
   const list = S.imp.list; let fresh = 0, exist = 0;
@@ -2101,10 +2197,13 @@ document.addEventListener("click", async e => {
     case "imp-open": if (ROLE === "owner") { S.imp = {}; go("clientImport"); } break;
     case "imp-pick": pickFile(".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv", async f => {
       S.imp = { busy: "Читаем файл…" }; render(true);
-      try { const list = await readDikidi(f); S.imp = list.length ? { list } : { err: "В файле не найдено ни одного клиента." }; }
+      try { const R = await readDikidi(f);
+        if (!R.list.length) S.imp = { err: R.kind === "book" ? "В файле нет ни одной записи." : "В файле не найдено ни одного клиента." };
+        else if (R.kind === "book") { const map = {}; R.list.forEach(r => { if (!(r.master in map)) map[r.master] = dkMasterGuess(r.master); }); S.imp = { kind: "book", list: R.list, map }; }
+        else S.imp = { kind: "cl", list: R.list }; }
       catch (err) { S.imp = { err: err.message || "Не удалось прочитать файл." }; }
       render(true); }); break;
-    case "imp-save": if (S.imp && S.imp.list && !S.imp.busy) { try { await saveImport(); toast("Клиенты загружены"); } catch (err) { S.imp = { list: S.imp.list, err: errText(err) }; toast(errText(err)); } render(true); } break;
+    case "imp-save": if (S.imp && S.imp.list && !S.imp.busy) { try { if (S.imp.kind === "book") { await saveBookImport(); toast("Записи перенесены"); } else { await saveImport(); toast("Клиенты загружены"); } } catch (err) { S.imp = { list: S.imp.list, err: errText(err) }; toast(errText(err)); } render(true); } break;
     case "cl-save": { const c = clientList().find(x => x.key === S.clKey); if (!c) break;
       const parts = c.name.trim().split(/\s+/), fn0 = parts.shift() || "", sn0 = parts.join(" ");
       const nm = fullName(S.clName != null ? S.clName : fn0, S.clSurname != null ? S.clSurname : sn0);
@@ -2270,6 +2369,7 @@ document.addEventListener("input", e => {
   }
 });
 document.addEventListener("change", async e => {
+  if (e.target.dataset && e.target.dataset.impMaster != null && S.imp && S.imp.map) { S.imp.map[e.target.dataset.impMaster] = e.target.value; render(true); return; }
   if (S.brk && ["brkDate", "brkStart", "brkDur", "brkRep"].includes(e.target.id)) { const K = S.brk, v = e.target.value;
     if (e.target.id === "brkDate" && v) K.date = v < todayKey() ? todayKey() : v; else if (e.target.id === "brkStart") K.start = +v; else if (e.target.id === "brkDur") K.dur = +v; else if (e.target.id === "brkRep") K.rep = +v;
     render(true); return; }
