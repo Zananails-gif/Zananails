@@ -868,7 +868,7 @@ const notifPrefs = () => Object.assign({ nb: true, cn: true, am: true, snd: true
 let pushSub = null, pushReady = false;
 function pushPost(path, body) {
   return fetch(PUSH_URL + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ salon: SALON_KEY }, body)), keepalive: true })
-    .then(r => r.json().catch(() => ({}))).catch(() => ({}));
+    .then(r => r.json().catch(() => ({ net: r.status >= 500 }))).catch(() => ({ net: true }));
 }
 function b64uToBytes(s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
 async function getPushSub(create) {
@@ -887,8 +887,12 @@ async function staffPushOn(ask) {
   if (Notification.permission !== "granted") return false;
   const sub = await getPushSub(true); if (!sub) { toast("Не удалось включить уведомления на этом телефоне"); return false; }
   const token = await USER.getIdToken().catch(() => "");
-  const r = await pushPost("/sub/staff", { token, sub, prefs: notifPrefs() });
-  pushSub = sub; pushReady = !!r.ok; lsSet(lsk("nb-push-on"), pushReady); render(true);
+  let r = await pushPost("/sub/staff", { token, sub, prefs: notifPrefs() });
+  if (r.net) { await new Promise(ok => setTimeout(ok, 2500)); r = await pushPost("/sub/staff", { token, sub, prefs: notifPrefs() }); }
+  pushSub = sub;
+  // no connection (weak internet / VPN off): keep it switched on, this phone re-registers quietly next time the app opens
+  if (r.net) { pushReady = true; lsSet(lsk("nb-push-on"), true); lsSet(lsk("nb-push-retry"), true); render(true); return true; }
+  pushReady = !!r.ok; lsSet(lsk("nb-push-on"), pushReady); lsSet(lsk("nb-push-retry"), false); render(true);
   return pushReady;
 }
 async function staffPushOff() {
@@ -898,7 +902,8 @@ async function staffPushOff() {
 }
 // staff: quietly refresh on each start (the phone may renew its subscription)
 async function staffPushRefresh() {
-  if (!pushSupported() || Notification.permission !== "granted" || !lsGet(lsk("nb-push-on"), false)) return;
+  if (!pushSupported() || Notification.permission !== "granted") return;
+  if (!lsGet(lsk("nb-push-on"), false) && !(await getPushSub(false))) return;
   await staffPushOn(false);
 }
 // client: remind me about this booking
