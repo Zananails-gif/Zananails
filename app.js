@@ -497,6 +497,7 @@ function startMasterWatch() {
     const before = new Set(NEWB.map(b => b.id));
     MASTER_ALL = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     deriveMaster();
+    if (S.view === "report") loadReport();
     if (shareView() && !unsubJday) watchJday();
     notifyNew(before);
     renderSoon(true);
@@ -1692,8 +1693,10 @@ function periodRange(p) {
   return [from, to, MONN[d.getMonth()] + " " + d.getFullYear()];
 }
 async function loadReport() {
-  if (ROLE !== "owner") return;
   const [from, to] = periodRange(S.repPeriod), key = S.repPeriod + from;
+  // a master's own report comes from her own bookings (already loaded) — only her money
+  if (ROLE === "master") { REPORT = { key, loading: false, list: MASTER_ALL.filter(b => b.artist === MY_ARTIST && b.date >= from && b.date <= to) }; renderSoon(true); return; }
+  if (ROLE !== "owner") return;
   REPORT = { key, loading: true, list: REPORT && REPORT.key === key ? REPORT.list : [] };
   renderSoon(true);
   try {
@@ -1739,10 +1742,11 @@ function vReport() {
   ${cards}
   <p class="tiny muted">Считаются подтверждённые записи, время которых уже прошло.</p>`;
 }
-function vReportMaster() {
-  const a = SET.artists.find(x => x.id === S.repMaster);
+function vReportMaster(mine) {
+  const id = mine ? MY_ARTIST : S.repMaster;
+  const a = SET.artists.find(x => x.id === id);
   const [, , label] = periodRange(S.repPeriod);
-  const L = ((REPORT && REPORT.list) || []).filter(b => b.artist === S.repMaster);
+  const L = ((REPORT && REPORT.list) || []).filter(b => b.artist === id);
   const done = L.filter(isDone), canc = L.filter(b => b.status === "cancelled");
   const svc = {};
   done.forEach(b => (b.services || []).forEach((id, i) => {
@@ -1751,10 +1755,14 @@ function vReportMaster() {
   }));
   const rows = done.concat(canc).sort((x, y) => (y.date + hm(y.start)).localeCompare(x.date + hm(x.start)));
   const mins = done.reduce((n, b) => n + Number(b.dur || 0), 0);
-  return `${header("Отчёт · " + label, a ? a.name : "Мастер", "report")}
+  const seg = [["day", "Сегодня"], ["week", "Неделя"], ["month", "Месяц"]].map(([v, l]) => `<button data-act="rep-period" data-v="${v}" aria-pressed="${S.repPeriod === v}">${l}</button>`).join("");
+  const planned = L.filter(b => (b.status === "confirmed" || b.status === "pending") && !isDone(b));
+  return `${mine ? `<h1 class="h1" style="font-size:26px">Мой заработок</h1>
+  <div class="seg" role="group" aria-label="Период">${seg}</div>
+  <div class="small muted" style="font-weight:600;margin-top:-8px">${esc(label)}${planned.length ? " · ещё запланировано: " + planned.length + " на " + rub(sumTotal(planned)) : ""}</div>` : header("Отчёт · " + label, a ? a.name : "Мастер", "report")}
   <div class="stat3">
     <div class="card"><span class="tiny muted">Клиентов</span><b>${done.length}</b></div>
-    <div class="card"><span class="tiny muted">Выручка</span><b>${rub(sumTotal(done))}</b></div>
+    <div class="card"><span class="tiny muted">${mine ? "Заработано" : "Выручка"}</span><b>${rub(sumTotal(done))}</b></div>
     <div class="card"><span class="tiny muted">Часов</span><b>${hoursTxt(mins)}</b></div>
   </div>
   ${Object.keys(svc).length ? `<div class="card sum"><h2 class="h2">Услуги</h2>${Object.keys(svc).sort((x, y) => svc[y].n - svc[x].n).map(k => `<div class="sumrow"><span>${esc(k)}</span><span class="price"><b>${svc[k].n}</b> · ${rub(svc[k].r)}</span></div>`).join("")}</div>` : ""}
@@ -1769,7 +1777,7 @@ function vReportMaster() {
 function ownerTabs() {
   const n = PENDING.length + NEWB.filter(b => b.status === "confirmed" && (b.created || 0) > inboxSeen).length;
   const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") || (v === "clients" && (S.view === "client" || S.view === "clientNew")) ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
-  return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${t("clients", ICON.users, "Клиенты")}${ROLE === "owner" ? t("report", ICON.chart, "Отчёт") : ""}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
+  return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${t("clients", ICON.users, "Клиенты")}${t("report", ICON.chart, ROLE === "master" ? "Заработок" : "Отчёт")}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
 }
 function saveBar() {
   if (!S.dirty) return "";
@@ -1876,7 +1884,7 @@ function render(keepScroll) {
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
         case "manual": html = S.mb ? vManual() : vJournal(); break;
-        case "report": html = ROLE === "owner" ? vReport() : vJournal(); break;
+        case "report": html = ROLE === "owner" ? vReport() : vReportMaster(true); break;
         case "reportMaster": html = ROLE === "owner" ? vReportMaster() : vJournal(); break;
         case "settings": html = ROLE === "master" ? vMasterAccount() : vSettings(); break;
         default: html = vJournal();
