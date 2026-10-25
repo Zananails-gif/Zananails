@@ -85,7 +85,7 @@ const ICON = {
 function defaultSettings() {
   return {
     name: "Название салона", area: "Город, адрес", phone: "", telegram: "", logo: "",
-    open: 9 * 60, close: 19 * 60, closedDays: [0], pediChairs: 1, autoConfirm: true,
+    open: 9 * 60, close: 19 * 60, closedDays: [0], pediChairs: 1, autoConfirm: true, leadMin: 120,
     artists: [{ id: "a1", name: "Мастер 1" }, { id: "a2", name: "Мастер 2" }],
     services: [
       { id: "s1", cat: "Маникюр", name: "Классический маникюр", dur: 45, price: 1500 },
@@ -111,6 +111,7 @@ function normalize(d) {
   if (typeof out.open !== "number") out.open = def.open;
   if (typeof out.close !== "number") out.close = def.close;
   if (!(out.pediChairs >= 1)) out.pediChairs = 1;
+  if (!(out.leadMin >= 0)) out.leadMin = 120;
   if (out.autoConfirm !== false) out.autoConfirm = true;
   return out;
 }
@@ -204,7 +205,11 @@ function slotsFor(date, artist, dur, needChair = selNeedsChair(), staff = false,
   if (!SET || isClosed(date) || !dur) return [];
   const out = [];
   // clients can book from 30 min ahead; staff can also add a client who is already in the chair today
-  const minStart = staff ? (date < todayKey() ? 1e9 : 0) : date === todayKey() ? nowMin() + 30 : 0;
+  // clients: no later than SET.leadMin before the visit (owner setting, default 2 hours); staff can add any time today
+  let minStart;
+  if (staff) minStart = date < todayKey() ? 1e9 : 0;
+  else { const e = new Date(Date.now() + ((SET && SET.leadMin) ?? 120) * 60e3), ek = keyOf(e);
+    minStart = date < ek ? 1e9 : date === ek ? e.getHours() * 60 + e.getMinutes() : 0; }
   for (let t = SET.open; t + dur <= SET.close; t += STEP) {
     if (t < minStart) continue;
     if (needChair && !chairFree(date, t, dur, ignoreId)) continue;
@@ -1409,6 +1414,9 @@ function vSettings() {
       <label class="field" for="dOpen">Открытие<input id="dOpen" data-d="open" type="time" step="1800" value="${hm(D.open)}"></label>
       <label class="field" for="dClose">Закрытие<input id="dClose" data-d="close" type="time" step="1800" value="${hm(D.close)}"></label>
     </div>
+    <label class="field" for="dLead">Онлайн-запись — не позже чем за
+      <select id="dLead" data-d="leadMin">${[[30, "30 минут"], [60, "1 час"], [120, "2 часа"], [180, "3 часа"], [240, "4 часа"], [360, "6 часов"], [720, "12 часов"], [1440, "1 день"]].map(([m, l]) => `<option value="${m}" ${Number(D.leadMin ?? 120) === m ? "selected" : ""}>${l} до визита</option>`).join("")}</select></label>
+    <span class="tiny muted" style="margin-top:-6px">Клиенты не видят время, до которого осталось меньше. Мастер и владелец могут записать клиента вручную на любое свободное время.</span>
     <div class="field">Выходные дни (нажмите, чтобы выбрать)
       <div class="daypick" role="group" aria-label="Выходные дни">${order.map(d => `<button data-act="dayoff" data-v="${d}" aria-pressed="${D.closedDays.includes(d)}">${DOW[d]}</button>`).join("")}</div></div>
   </div>
@@ -1866,6 +1874,7 @@ document.addEventListener("input", e => {
     const D = S.draft, p = t.dataset.d.split(":");
     if (p[0] === "name" || p[0] === "area" || p[0] === "phone" || p[0] === "telegram") D[p[0]] = t.value;
     else if (p[0] === "open" || p[0] === "close") { const m = parseHM(t.value); if (m != null) D[p[0]] = m; }
+    else if (p[0] === "leadMin") D.leadMin = parseInt(t.value, 10) || 0;
     else if (p[0] === "pediChairs") { const n = parseInt(t.value, 10); D.pediChairs = isNaN(n) ? 0 : n; }
     else if (p[0] === "artist") D.artists[+p[1]].name = t.value;
     else if (p[0] === "artistEmail") D.artists[+p[1]].email = t.value;
