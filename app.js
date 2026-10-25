@@ -40,6 +40,8 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 const durTxt = m => m >= 60 ? (Math.floor(m / 60) + " ч" + (m % 60 ? " " + (m % 60) + " мин" : "")) : m + " мин";
 const plural = (n, f) => { const a = Math.abs(n) % 100, b = a % 10; return a > 10 && a < 20 ? f[2] : b > 1 && b < 5 ? f[1] : b === 1 ? f[0] : f[2]; };
 const clone = o => JSON.parse(JSON.stringify(o));
+// first name + optional surname, stored together as the client's name
+const fullName = (n, sn) => (String(n || "").trim() + " " + String(sn || "").trim()).trim().replace(/\s+/g, " ").slice(0, 60);
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
@@ -941,7 +943,9 @@ function vDetails() {
   <form id="detailsForm" class="stack" novalidate>
     <h2 class="h2">Ваши данные</h2>
     <label class="field" for="fName">Имя ${nameErr ? '<span class="err">Введите ваше имя</span>' : ""}
-      <input id="fName" name="name" autocomplete="name" maxlength="60" value="${esc(f.name)}" placeholder="Имя и фамилия"></label>
+      <input id="fName" name="given-name" autocomplete="given-name" maxlength="30" value="${esc(f.name)}" placeholder="Имя"></label>
+    <label class="field" for="fSurname">Фамилия (необязательно)
+      <input id="fSurname" name="family-name" autocomplete="family-name" maxlength="30" value="${esc(f.surname || "")}" placeholder="Фамилия"></label>
     <label class="field" for="fPhone">Телефон ${phoneErr ? '<span class="err">Введите корректный номер телефона</span>' : ""}
       <input id="fPhone" name="phone" type="tel" autocomplete="tel" maxlength="25" value="${esc(f.phone)}" placeholder="+7 900 000-00-00"></label>
     <p class="tiny muted" style="margin-top:-6px">С кодом страны — на этот номер салон пришлёт подтверждение в WhatsApp.</p>
@@ -1248,8 +1252,9 @@ function vManual() {
       : `<div class="small muted">На этот день нет свободного времени${chair ? " (или занято педикюрное кресло)" : ""}.</div>`}
   </div>
   <div class="card stack"><b>Клиент</b>
-    <label class="field" for="mbName">Имя *<input id="mbName" maxlength="60" autocomplete="off" value="${esc(M.name)}" placeholder="Имя клиента"></label>
+    <label class="field" for="mbName">Имя *<input id="mbName" maxlength="30" autocomplete="off" value="${esc(M.name)}" placeholder="Имя клиента"></label>
     ${S.tried && !M.name.trim() ? `<div class="err">Укажите имя клиента</div>` : ""}
+    <label class="field" for="mbSurname">Фамилия (необязательно)<input id="mbSurname" maxlength="30" autocomplete="off" value="${esc(M.surname || "")}" placeholder="Фамилия"></label>
     <label class="field" for="mbPhone">Телефон (необязательно)<input id="mbPhone" type="tel" inputmode="tel" maxlength="25" autocomplete="off" value="${esc(M.phone)}" placeholder="+7 900 000 00 00"></label>
     <label class="field" for="mbNote">Комментарий (необязательно)<input id="mbNote" maxlength="250" autocomplete="off" value="${esc(M.note)}" placeholder="Например: записалась по телефону"></label>
   </div>`;
@@ -1267,7 +1272,7 @@ async function saveManual() {
   if (!artist || !artistFree(artist, M.date, M.time, dur) || (chair && !chairFree(M.date, M.time, dur))) { toast("Это время уже занято. Выберите другое."); M.time = null; render(true); return; }
   const id = doc(SC("bookings")).id, now = Date.now();
   const data = { date: M.date, start: M.time, dur, artist, anyArtist: false, services: sel, serviceNames: sel.map(x => svcById(x).name),
-    total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), name: M.name.trim().slice(0, 60), phone: M.phone.trim().slice(0, 25),
+    total: Math.round(sel.reduce((n, x) => n + Number(svcById(x).price || 0), 0)), name: fullName(M.name, M.surname), phone: M.phone.trim().slice(0, 25),
     note: M.note.trim().slice(0, 250), status: "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {}) };
   S.saving = true; render(true);
   try {
@@ -1846,6 +1851,8 @@ overlay.addEventListener("click", e => { if (e.target.classList.contains("scrim"
 document.addEventListener("input", e => {
   const t = e.target;
   if (t.id === "fName") { S.form.name = t.value; lsSet("nb-form", S.form); }
+  else if (t.id === "fSurname") { S.form.surname = t.value; lsSet("nb-form", S.form); }
+  else if (S.mb && t.id === "mbSurname") S.mb.surname = t.value;
   else if (t.id === "fPhone") { S.form.phone = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fNote") S.form.note = t.value;
   else if (t.id === "revText" && S.revDraft) S.revDraft.text = t.value;
@@ -2047,7 +2054,7 @@ async function book() {
   const data = {
     date: S.date, start: S.time, dur, artist, anyArtist: S.artist === "any",
     services, serviceNames: services.map(x => svcById(x).name), total: Math.round(selTotal()),
-    name: f.name.trim().slice(0, 60), phone: f.phone.trim().slice(0, 25), note: f.note.trim().slice(0, 250),
+    name: fullName(f.name, f.surname), phone: f.phone.trim().slice(0, 25), note: f.note.trim().slice(0, 250),
     status: SET.autoConfirm === false ? "pending" : "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {})
   };
   S.saving = true; render(true);
@@ -2071,7 +2078,7 @@ async function book() {
   pushEvent(id, "new", "client");
   if (pushSupported() && Notification.permission === "granted") clientRemind(id, false);
   S.lastBooked = data.status; S.bookTab = "upcoming";
-  Object.assign(S, { sel: [], artist: "any", date: null, time: null, tried: false, form: { name: f.name, phone: f.phone, note: "" } });
+  Object.assign(S, { sel: [], artist: "any", date: null, time: null, tried: false, form: { name: f.name, surname: f.surname || "", phone: f.phone, note: "" } });
   S.view = "bookings"; S.armed = null; render(false);
 }
 async function cancelBooking(id) {
