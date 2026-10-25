@@ -575,7 +575,7 @@ function clientList() {
       if (b.date > c.last) { c.last = b.date; c.lastSvc = (b.serviceNames || []).join(", "); c.lastArtist = b.artist; } c.artists[b.artist] = (c.artists[b.artist] || 0) + 1; }
     else if (!c.next || b.date < c.next) c.next = b.date;
   });
-  Object.keys(CLIENT_DOCS).forEach(k => { const d = CLIENT_DOCS[k], c = add(k, d.name, d.phone); if (d.name) c.name = d.name; if (d.phone) c.phone = d.phone; c.note = d.note || ""; c.saved = true; });
+  Object.keys(CLIENT_DOCS).forEach(k => { const d = CLIENT_DOCS[k], c = add(k, d.name, d.phone); if (d.name) c.name = d.name; if (d.phone) c.phone = d.phone; c.note = d.note || ""; c.saved = true; if (d.dk) c.dk = d.dk; });
   return Object.values(m).sort((a, b) => ((b.next || b.last) || "").localeCompare((a.next || a.last) || "") || a.name.localeCompare(b.name));
 }
 function matchClients(q, limit) {
@@ -589,7 +589,7 @@ function vClients() {
   const q = S.clQ || "", all = clientList(), list = q.trim().length >= 2 ? matchClients(q) : all;
   return `<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 class="h1" style="font-size:26px">Клиенты</h1><span class="small muted">${all.length} в базе</span></div>
   <label class="search"><span aria-hidden="true">⌕</span><input id="clQ" type="search" inputmode="search" autocomplete="off" placeholder="Имя или телефон" value="${esc(q)}" aria-label="Поиск клиента"></label>
-  <button class="btn ghost" data-act="cl-new">${ICON.plus}Новый клиент</button>
+  <div class="btns"><button class="btn ghost" style="flex:2" data-act="cl-new">${ICON.plus}Новый клиент</button>${ROLE === "owner" ? `<button class="btn ghost" style="flex:1" data-act="imp-open">Импорт из DIKIDI</button>` : ""}</div>
   <div id="clList">${clientRows(list)}</div>
   <p class="tiny muted">Клиент попадает в базу автоматически после записи — онлайн или вручную. ${ROLE === "master" && !shareView() ? "Вы видите своих клиентов." : ""}</p>`;
 }
@@ -599,7 +599,7 @@ function clientRows(list) {
   return `<div class="card" style="padding:0">${list.slice(0, 200).map((c, i) => `<button class="cl-row" data-act="cl-open" data-v="${esc(c.key)}" style="${i ? "" : "border-top:0"}">
       <span class="biglogo" style="width:40px;height:40px;border-radius:20px;font-size:16px">${esc(c.name.charAt(0).toUpperCase())}</span>
       <span class="stack" style="gap:1px;flex:1;min-width:0;text-align:left"><b>${esc(c.name)}</b><span class="tiny muted">${esc(c.phone || "без телефона")}</span>
-        ${c.last ? `<span class="tiny muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">посл.: ${esc(shortDate(c.last))} · ${esc(c.lastSvc || "")}</span>` : ""}</span>
+        ${c.last ? `<span class="tiny muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">посл.: ${esc(shortDate(c.last))} · ${esc(c.lastSvc || "")}</span>` : c.dk && c.dk.last ? `<span class="tiny muted">DIKIDI: ${c.dk.visits} зап. · посл. ${esc(keyRu(c.dk.last))}</span>` : ""}</span>
       <span class="stack" style="gap:1px;align-items:flex-end"><b class="small">${visitsTxt(c.visits)}</b><span class="tiny muted">${rub(c.spent)}</span>${c.next ? `<span class="tiny" style="color:var(--accent)">запись ${esc(shortDate(c.next))}</span>` : ""}</span></button>`).join("")}</div>`;
 }
 function vClient() {
@@ -611,6 +611,7 @@ function vClient() {
   const msgB = { name: c.name, phone: c.phone };
   return `${header("", c.name, "clients")}
   <div class="stat3"><div class="card"><span class="tiny muted">Визитов</span><b>${c.visits}</b></div><div class="card"><span class="tiny muted">Потрачено</span><b>${rub(c.spent)}</b></div><div class="card"><span class="tiny muted">Отмены</span><b>${c.cancels}</b></div></div>
+  ${c.dk ? `<div class="card stack" style="gap:2px"><span class="tiny muted" style="font-weight:700">ИСТОРИЯ ИЗ DIKIDI</span><b>${c.dk.visits} ${plural(c.dk.visits, ["запись", "записи", "записей"])} · потрачено ${rub(c.dk.spent)}</b><span class="small muted">${c.dk.last ? "последняя запись " + esc(keyRu(c.dk.last)) : ""}${c.dk.bday ? (c.dk.last ? " · " : "") + "день рождения " + esc(c.dk.bday) : ""}</span></div>` : ""}
   ${c.last ? `<div class="card stack" style="gap:2px"><span class="tiny muted" style="font-weight:700">ПОСЛЕДНИЙ ВИЗИТ</span><b>${esc(shortDate(c.last))} · ${esc(c.lastSvc || "")}</b><span class="small muted">мастер ${esc(artistName(c.lastArtist))}${c.next ? " · следующая запись " + esc(shortDate(c.next)) : ""}</span></div>` : ""}
   <div class="card stack">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:16px;user-select:all">${esc(c.phone || "Телефон не указан")}</b>${fav ? `<span class="tiny muted">обычно к мастеру ${esc(artistName(fav))}</span>` : ""}</div>
@@ -646,6 +647,78 @@ function vClientNew() {
 async function saveClientCard(key, data) {
   const id = key.slice(0, 60);
   await setDoc(SD("clients", id), Object.assign({ name: "", phone: "", note: "", updated: Date.now() }, CLIENT_DOCS[id] || {}, data, { updated: Date.now() }));
+}
+/* ================= import of clients from DIKIDI («Клиенты → Список клиентов → Excel / CSV») ================= */
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((ok, bad) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload = () => window.XLSX ? ok(window.XLSX) : bad(new Error("x")); s.onerror = () => bad(new Error("Не удалось открыть Excel. Проверьте интернет и попробуйте снова.")); document.head.appendChild(s); });
+}
+const ruDateKey = v => { const m = String(v || "").match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/); return m ? m[3] + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0") : ""; };
+const keyRu = k => k ? k.slice(8, 10) + "." + k.slice(5, 7) + "." + k.slice(0, 4) : "";
+function normPhone(p) { let d = String(p || "").replace(/\D/g, ""); if (d.length === 11 && d[0] === "8") d = "7" + d.slice(1); if (d.length === 10) d = "7" + d; return d.length >= 7 ? ("+" + d).slice(0, 25) : ""; }
+async function readDikidi(file) {
+  const X = await loadXlsx();
+  const wb = X.read(await file.arrayBuffer(), { type: "array", raw: false });
+  const rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" });
+  const hi = rows.findIndex(r => r.some(c => /^имя/i.test(String(c).trim())) && r.some(c => /телефон|мобильн/i.test(String(c))));
+  if (hi < 0) throw new Error("В файле нет колонок «Имя» и «Мобильный номер». Нужен файл из DIKIDI: Клиенты → Список клиентов → Excel.");
+  const H = rows[hi].map(c => String(c).trim().toLowerCase()), col = re => H.findIndex(h => re.test(h));
+  const cN = col(/^имя/), cS = col(/^фамилия/), cP = col(/мобильн|телефон/), cC = col(/коммент/), cSp = col(/^потрачено/),
+    cV = col(/количество (записей|визитов)/), cL = col(/последний визит/), cB = col(/день рождения/), cBl = col(/(черном|чёрном) списке/);
+  const g = (r, i) => i < 0 ? "" : String(r[i] == null ? "" : r[i]).trim(), num = v => { const n = Number(String(v).replace(/\s/g, "").replace(",", ".")); return isFinite(n) ? n : 0; };
+  const out = {};
+  rows.slice(hi + 1).forEach(r => {
+    const name = fullName(g(r, cN), g(r, cS)), phone = normPhone(g(r, cP));
+    if (!name && !phone) return;
+    const black = /^да$/i.test(g(r, cBl)), com = g(r, cC);
+    const note = ((black ? "⚠ В чёрном списке (DIKIDI). " : "") + com).slice(0, 1000);
+    const key = clientKey(name || phone, phone);
+    const dk = { visits: Math.round(num(g(r, cV))), spent: Math.round(num(g(r, cSp))), last: ruDateKey(g(r, cL)), bday: g(r, cB).slice(0, 20) };
+    if (!out[key]) out[key] = { key, name: name || "Клиент", phone, note, dk };
+  });
+  return Object.values(out);
+}
+function vClientImport() {
+  const I = S.imp || {};
+  const top = `${header("", "Импорт из DIKIDI", "clients")}`;
+  if (I.busy) return top + `<div class="card stack"><b>${esc(I.busy)}</b>${loading()}</div>`;
+  if (I.done) return top + `<div class="card stack" role="status"><b style="font-size:17px">Готово ✓</b><span>Добавлено новых клиентов: <b>${I.done.fresh}</b></span><span>Обновлено (уже были в базе): <b>${I.done.exist}</b></span></div>
+    <button class="btn" data-act="go" data-v="clients">К списку клиентов</button>`;
+  if (!I.list) return top + `<div class="card stack"><b>Перенесите клиентов из DIKIDI</b>
+    <ol class="small" style="margin:0;padding-left:20px;line-height:1.6"><li>В DIKIDI: <b>Клиенты → Список клиентов → ⋮ → Excel</b> (может только «Создатель» салона).</li><li>Нажмите кнопку ниже и выберите этот файл.</li><li>Проверьте и нажмите «Загрузить».</li></ol>
+    <span class="tiny muted">Переносятся имя, фамилия, телефон, комментарий, число записей, потраченная сумма, последний визит и день рождения. Повторы по номеру телефона не дублируются.</span></div>
+    ${I.err ? `<div class="err-box" role="alert">${esc(I.err)}</div>` : ""}
+    <button class="btn" data-act="imp-pick">Выбрать файл (Excel или CSV)</button>`;
+  const fresh = I.list.filter(r => !CLIENT_DOCS[r.key]).length, exist = I.list.length - fresh;
+  return top + `<div class="stat3"><div class="card"><span class="tiny muted">В файле</span><b>${I.list.length}</b></div><div class="card"><span class="tiny muted">Новые</span><b>${fresh}</b></div><div class="card"><span class="tiny muted">Уже в базе</span><b>${exist}</b></div></div>
+  <div class="card" style="padding:0">${I.list.slice(0, 8).map((r, i) => `<div class="cl-hist" style="${i ? "" : "border-top:0"}"><span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small">${esc(r.name)}</b><span class="tiny muted">${esc(r.phone || "без телефона")}${r.dk.last ? " · посл. " + esc(keyRu(r.dk.last)) : ""}</span></span><span class="tiny muted">${r.dk.visits} зап.</span></div>`).join("")}
+  ${I.list.length > 8 ? `<div class="cl-hist tiny muted">…и ещё ${I.list.length - 8}</div>` : ""}</div>
+  <p class="tiny muted">У клиентов, которые уже есть в базе, сохранятся ваши имя, телефон и заметка — добавится только история из DIKIDI.</p>
+  <button class="btn" data-act="imp-save">Загрузить ${I.list.length} ${plural(I.list.length, ["клиента", "клиента", "клиентов"])}</button>
+  <button class="btn ghost" data-act="imp-pick">Выбрать другой файл</button>`;
+}
+async function saveImport() {
+  const list = S.imp.list; let fresh = 0, exist = 0;
+  for (let i = 0; i < list.length; i += 400) {
+    S.imp.busy = `Загружаем… ${Math.min(i + 400, list.length)} из ${list.length}`; render(true);
+    const batch = writeBatch(db);
+    list.slice(i, i + 400).forEach(r => { const id = r.key.slice(0, 60), old = CLIENT_DOCS[id];
+      if (old) exist++; else fresh++;
+      batch.set(SD("clients", id), Object.assign({ created: Date.now() }, old || {}, { name: (old && old.name) || r.name, phone: (old && old.phone) || r.phone, note: (old && old.note) || r.note, dk: r.dk, updated: Date.now() })); });
+    await batch.commit();
+  }
+  S.imp = { done: { fresh, exist } };
+}
+let filePicker = null, fileTarget = null;
+function pickFile(accept, onFile) {
+  fileTarget = onFile;
+  if (!filePicker) {
+    filePicker = document.createElement("input"); filePicker.type = "file"; filePicker.id = "impFile";
+    filePicker.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0"; document.body.appendChild(filePicker);
+    filePicker.addEventListener("change", () => { const f = filePicker.files && filePicker.files[0]; if (f && fileTarget) fileTarget(f); filePicker.value = ""; });
+  }
+  filePicker.accept = accept; filePicker.click();
 }
 // suggestions under the name / phone fields of «Записать клиента»
 function mbSuggest() {
@@ -1842,7 +1915,7 @@ function vReportMaster(mine) {
 
 function ownerTabs() {
   const n = PENDING.length + NEWB.filter(b => b.status === "confirmed" && (b.created || 0) > inboxSeen).length;
-  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") || (v === "clients" && (S.view === "client" || S.view === "clientNew")) ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") || (v === "clients" && (S.view === "client" || S.view === "clientNew" || S.view === "clientImport")) ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
   return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${t("clients", ICON.users, "Клиенты")}${t("report", ICON.chart, ROLE === "master" ? "Заработок" : "Отчёт")}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
 }
 function saveBar() {
@@ -1945,6 +2018,7 @@ function render(keepScroll) {
         case "admins": html = isRealOwner() ? vAdmins() : vJournal(); break;
         case "client": html = vClient(); break;
         case "clientNew": html = vClientNew(); break;
+        case "clientImport": html = ROLE === "owner" ? vClientImport() : vClients(); break;
         case "tpl": html = ROLE === "owner" ? vTpl() : vJournal(); break;
         case "resched": html = S.rs ? vResched() : vJournal(); break;
         case "break": html = S.brk ? vBreak() : vJournal(); break;
@@ -2024,6 +2098,13 @@ document.addEventListener("click", async e => {
     case "adm-del": try { await deleteDoc(doc(db, "admins", v)); toast("Права администратора убраны"); } catch (err) { toast(errText(err)); } S.armed = null; render(true); break;
     case "cl-open": S.clKey = v; S.clNote = S.clName = S.clSurname = S.clPhone = null; go("client"); break;
     case "cl-new": S.cn = null; S.cnErr = ""; go("clientNew"); break;
+    case "imp-open": if (ROLE === "owner") { S.imp = {}; go("clientImport"); } break;
+    case "imp-pick": pickFile(".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv", async f => {
+      S.imp = { busy: "Читаем файл…" }; render(true);
+      try { const list = await readDikidi(f); S.imp = list.length ? { list } : { err: "В файле не найдено ни одного клиента." }; }
+      catch (err) { S.imp = { err: err.message || "Не удалось прочитать файл." }; }
+      render(true); }); break;
+    case "imp-save": if (S.imp && S.imp.list && !S.imp.busy) { try { await saveImport(); toast("Клиенты загружены"); } catch (err) { S.imp = { list: S.imp.list, err: errText(err) }; toast(errText(err)); } render(true); } break;
     case "cl-save": { const c = clientList().find(x => x.key === S.clKey); if (!c) break;
       const parts = c.name.trim().split(/\s+/), fn0 = parts.shift() || "", sn0 = parts.join(" ");
       const nm = fullName(S.clName != null ? S.clName : fn0, S.clSurname != null ? S.clSurname : sn0);
