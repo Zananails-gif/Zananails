@@ -5,10 +5,22 @@ service cloud.firestore {
     // Поддержка приложения (настраивается только в консоли Firebase)
     function isSupport() { return false; }
 
-    // Владелец салона (видит всё)
-    function isOwner() {
+    // Главный владелец (по UID) и поддержка
+    function realOwner() {
       return request.auth != null && (request.auth.uid == "q1zJeejwznf4FkUuVuOFxK0CUU23"
         || isSupport());
+    }
+
+    // Администраторы, которых добавил владелец (Настройки → Администраторы):
+    // «email|*» — все салоны и оплаты, «email|main» или «email|<салон>» — только этот салон
+    function adminAll() {
+      return staffEmail() != '' && exists(/databases/$(database)/documents/admins/$(staffEmail() + '|*'));
+    }
+    // Владелец всех салонов (видит всё)
+    function isOwner() { return realOwner() || adminAll(); }
+    // Владелец главного салона «Архитектура ногтей»
+    function mainOwner() {
+      return isOwner() || (staffEmail() != '' && exists(/databases/$(database)/documents/admins/$(staffEmail() + '|main')));
     }
 
     // Мастер: подтверждённый email, который владелец вписал в «Настройки → Мастера».
@@ -25,13 +37,13 @@ service cloud.firestore {
     // Настройки салона: читают все, меняет только владелец
     match /settings/{docId} {
       allow read: if true;
-      allow write: if isOwner();
+      allow write: if mainOwner();
     }
 
     // Список email мастеров: видят владелец и мастера, меняет только владелец
     match /private/{docId} {
-      allow read: if isOwner() || (docId == 'staff' && myArtist() != '');
-      allow write: if isOwner();
+      allow read: if mainOwner() || (docId == 'staff' && myArtist() != '');
+      allow write: if mainOwner();
     }
 
     // Записи клиентов (подтверждаются сразу, если в настройках включено «Подтверждать автоматически»)
@@ -39,14 +51,14 @@ service cloud.firestore {
       // Клиент открывает свою запись только по её секретному номеру.
       // Список: владелец — все записи, мастер — только свои.
       allow get: if true;
-      allow list: if isOwner() || (myArtist() != '' && (resource.data.artist == myArtist() || get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true));
+      allow list: if mainOwner() || (myArtist() != '' && (resource.data.artist == myArtist() || get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true));
 
       allow create: if
         request.resource.data.keys().hasOnly(['date','start','dur','artist','anyArtist','services','serviceNames','total','name','phone','note','status','created','updated','chair'])
         && request.resource.data.get('chair', false) is bool
         && (request.resource.data.status == 'pending'
             || (request.resource.data.status == 'confirmed'
-                && (isOwner()
+                && (mainOwner()
                     || (myArtist() != '' && request.resource.data.artist == myArtist())
                     || get(/databases/$(database)/documents/settings/salon).data.get('autoConfirm', true) == true)))
         && request.resource.data.date is string && request.resource.data.date.size() == 10
@@ -60,7 +72,7 @@ service cloud.firestore {
         && request.resource.data.serviceNames is list && request.resource.data.serviceNames.size() <= 20;
 
       // Владелец меняет что угодно; клиент может только отменить; мастер — подтвердить или отменить свою запись
-      allow update: if isOwner()
+      allow update: if mainOwner()
         || (
           resource.data.status != 'cancelled'
           && request.resource.data.status == 'cancelled'
@@ -76,13 +88,13 @@ service cloud.firestore {
           && request.resource.data.start is int && request.resource.data.start >= 0 && request.resource.data.start < 1440
           && request.resource.data.dur is int && request.resource.data.dur > 0 && request.resource.data.dur <= 600
         );
-      allow delete: if isOwner();
+      allow delete: if mainOwner();
     }
 
     // Занятое время (без имён и телефонов) — нужно всем, чтобы показывать свободные окна
     match /busy/{id} {
       allow read: if true;
-      allow create: if isOwner() || (
+      allow create: if mainOwner() || (
         request.resource.data.keys().hasOnly(['date','start','dur','artist','chair'])
         && request.resource.data.get('chair', false) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.get('chair', false)
         && getAfter(/databases/$(database)/documents/bookings/$(id)).data.status in ['pending', 'confirmed']
@@ -91,20 +103,20 @@ service cloud.firestore {
         && request.resource.data.dur == getAfter(/databases/$(database)/documents/bookings/$(id)).data.dur
         && request.resource.data.artist == getAfter(/databases/$(database)/documents/bookings/$(id)).data.artist
       );
-      allow update: if isOwner() || (myArtist() != ''
+      allow update: if mainOwner() || (myArtist() != ''
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date','start','dur','artist'])
         && request.resource.data.date == getAfter(/databases/$(database)/documents/bookings/$(id)).data.date
         && request.resource.data.start == getAfter(/databases/$(database)/documents/bookings/$(id)).data.start
         && request.resource.data.get('dur', 0) == getAfter(/databases/$(database)/documents/bookings/$(id)).data.dur
         && request.resource.data.artist == getAfter(/databases/$(database)/documents/bookings/$(id)).data.artist
         && (resource.data.artist == myArtist() || (get(/databases/$(database)/documents/settings/salon).data.get('shareView', false) == true && get(/databases/$(database)/documents/settings/salon).data.get('shareEdit', false) == true)));
-      allow delete: if isOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
+      allow delete: if mainOwner() || getAfter(/databases/$(database)/documents/bookings/$(id)).data.status == 'cancelled';
     }
 
     // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера
     match /clients/{id} {
-      allow read, delete: if isOwner() || myArtist() != '';
-      allow create, update: if (isOwner() || myArtist() != '')
+      allow read, delete: if mainOwner() || myArtist() != '';
+      allow create, update: if (mainOwner() || myArtist() != '')
         && request.resource.data.name is string && request.resource.data.name.size() <= 60
         && request.resource.data.get('phone', '') is string && request.resource.data.get('phone', '').size() <= 25
         && request.resource.data.get('note', '') is string && request.resource.data.get('note', '').size() <= 1000;
@@ -113,15 +125,15 @@ service cloud.firestore {
     // Фото работ: видят все; добавляет владелец или мастер (только свои); скрывает владелец
     match /works/{id} {
       allow read: if true;
-      allow create: if (isOwner() || (myArtist() != '' && request.resource.data.artist == myArtist()))
+      allow create: if (mainOwner() || (myArtist() != '' && request.resource.data.artist == myArtist()))
         && request.resource.data.keys().hasOnly(['artist','cat','title','thumb','created','hidden'])
         && request.resource.data.artist is string && request.resource.data.artist.size() < 40
         && request.resource.data.cat is string && request.resource.data.cat.size() < 40
         && request.resource.data.title is string && request.resource.data.title.size() <= 60
         && request.resource.data.thumb is string && request.resource.data.thumb.size() < 120000
         && request.resource.data.hidden == false;
-      allow update: if isOwner();
-      allow delete: if isOwner() || (myArtist() != '' && resource.data.artist == myArtist());
+      allow update: if mainOwner();
+      allow delete: if mainOwner() || (myArtist() != '' && resource.data.artist == myArtist());
     }
     // Отзывы: видят все. Оставить может только клиент после подтверждённого визита —
     // номер отзыва = номер его записи (секретный), один отзыв на одну запись.
@@ -140,33 +152,37 @@ service cloud.firestore {
         && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
         && request.resource.data.text is string && request.resource.data.text.size() <= 500
         && request.resource.data.edited == false;
-      allow update: if isOwner()
+      allow update: if mainOwner()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating','text','edited','updated'])
         && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
         && request.resource.data.text is string && request.resource.data.text.size() <= 500
         && request.resource.data.edited == true;
-      allow delete: if isOwner();
+      allow delete: if mainOwner();
     }
     // Фото профиля мастера: видят все; меняет владелец или сам мастер (только своё)
     match /avatars/{artistId} {
       allow read: if true;
-      allow write: if (isOwner() || (myArtist() != '' && artistId == myArtist()))
+      allow write: if (mainOwner() || (myArtist() != '' && artistId == myArtist()))
         && request.resource.data.keys().hasOnly(['img','updated'])
         && request.resource.data.img is string && request.resource.data.img.size() < 80000;
     }
     // Фото в полном размере (отдельно, чтобы галерея грузилась быстро)
     match /workImages/{id} {
       allow read: if true;
-      allow create: if (isOwner() || (myArtist() != '' && getAfter(/databases/$(database)/documents/works/$(id)).data.artist == myArtist()))
+      allow create: if (mainOwner() || (myArtist() != '' && getAfter(/databases/$(database)/documents/works/$(id)).data.artist == myArtist()))
         && request.resource.data.keys().hasOnly(['img'])
         && request.resource.data.img is string && request.resource.data.img.size() < 900000;
-      allow delete: if isOwner() || (myArtist() != '' && get(/databases/$(database)/documents/works/$(id)).data.artist == myArtist());
+      allow delete: if mainOwner() || (myArtist() != '' && get(/databases/$(database)/documents/works/$(id)).data.artist == myArtist());
     }
 
     // ===================== Другие салоны (salons/<id>) =====================
     // Реестр салонов: видят все (статус подписки нужен клиентам); меняет администратор.
     // Владелец салона может только сообщить об оплате (payClaim).
     function isAdmin() { return isOwner(); }
+    match /admins/{id} {
+      allow get: if realOwner() || (staffEmail() != '' && id.split('[|]')[0] == staffEmail());
+      allow list, write: if realOwner();
+    }
     match /billing/{docId} {
       allow read: if true;
       allow write: if isAdmin();
@@ -178,7 +194,8 @@ service cloud.firestore {
     match /salons/{sid} {
       function sOwner() {
         return isAdmin() || (staffEmail() != ''
-          && get(/databases/$(database)/documents/salonsPrivate/$(sid)).data.get('ownerEmail', '') == staffEmail());
+          && (get(/databases/$(database)/documents/salonsPrivate/$(sid)).data.get('ownerEmail', '') == staffEmail()
+              || exists(/databases/$(database)/documents/admins/$(staffEmail() + '|' + sid))));
       }
       function sArtist() {
         return staffEmail() == '' ? ''

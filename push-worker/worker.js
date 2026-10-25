@@ -69,6 +69,9 @@ async function staffRole(salon, token, env) {
   const staff = await fsGet(pfx(salon) + "private/staff", token);
   if (staff.status !== 200 && staff.status !== 404) return null;      // token invalid or not staff of this salon
   if (uid === OWNER_UID || (verified && env.SUPPORT_EMAIL && email === String(env.SUPPORT_EMAIL).toLowerCase())) return { role: "owner", uid };
+  if (verified) {   // administrators added by the owner
+    for (const id of [email + "|*", email + "|" + salon]) { const a = await fsGet("admins/" + encodeURIComponent(id), token); if (a.status === 200) return { role: "owner", uid }; }
+  }
   if (salon !== "main" && verified) {
     const p = await fsGet("salonsPrivate/" + salon, token);
     if (p.status === 200 && String(p.data.ownerEmail || "").toLowerCase() === email) return { role: "owner", uid };

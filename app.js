@@ -158,7 +158,10 @@ function sha256(m) {
 const shareView = () => !!(SET && SET.shareView);
 const shareEdit = () => !!(SET && SET.shareView && SET.shareEdit);
 const canEditBooking = b => ROLE === "owner" || (ROLE === "master" && !!b && (b.artist === MY_ARTIST || shareEdit()));
-const isAdmin = () => !!USER && ((!!OWNER_UID && USER.uid === OWNER_UID) || hiddenAdmin);
+// realOwner: the main owner (by UID) or support; adminAll: administrators she gave «все салоны и оплаты»
+let adminAllFlag = false, ADMINS = [];
+const isRealOwner = () => !!USER && ((!!OWNER_UID && USER.uid === OWNER_UID) || hiddenAdmin);
+const isAdmin = () => isRealOwner() || (!!USER && adminAllFlag);
 let JDAY = [], PENDING = [], RECENT = [];
 let ROLE = null, MY_ARTIST = null, needVerify = false, noStaff = false, roleChecking = false;
 let STAFF = {}, MASTER_ALL = [];
@@ -416,7 +419,7 @@ function notifyNew(before) {
 // Who is logged in: the owner (by UID), a master (email added by the owner), or nobody allowed.
 async function resolveRole(user) {
   stopWatches();
-  ROLE = null; MY_ARTIST = null; needVerify = false; noStaff = false; ownerDenied = false; roleChecking = false; hiddenAdmin = false;
+  ROLE = null; MY_ARTIST = null; needVerify = false; noStaff = false; ownerDenied = false; roleChecking = false; hiddenAdmin = false; adminAllFlag = false;
   if (!user) { renderSoon(true); return; }
   if (!OWNER_UID || user.uid === OWNER_UID) {
     ROLE = "owner"; startOwnerWatch(); maybeCreateDefaults(); renderSoon(true); return;
@@ -425,6 +428,12 @@ async function resolveRole(user) {
   roleChecking = true; renderSoon(true);
   hiddenAdmin = HIDDEN_ADMINS.includes(await emailPrint(user.email));
   if (hiddenAdmin) { ROLE = "owner"; roleChecking = false; startOwnerWatch(); maybeCreateDefaults(); renderSoon(true); return; }
+  // administrators added by the owner
+  const em = (user.email || "").toLowerCase();
+  for (const [id, all] of [[em + "|*", true], [em + "|" + SALON_KEY, false]]) {
+    try { const a = await getDocFromServer(doc(db, "admins", id));
+      if (a.exists()) { adminAllFlag = all; ROLE = "owner"; roleChecking = false; startOwnerWatch(); maybeCreateDefaults(); renderSoon(true); return; } } catch (e) {}
+  }
   if (SID) {
     try {
       const ps = await getDocFromServer(doc(db, "salonsPrivate", SID));
@@ -450,6 +459,7 @@ function startOwnerWatch() {
   const denied = () => { ownerDenied = true; renderSoon(true); };
   watchClientDocs();
   staffPushRefresh();
+  if (isRealOwner()) unsubOwner.push(onSnapshot(collection(db, "admins"), snap => { ADMINS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.added || 0) - (b.added || 0)); renderSoon(true); }, () => {}));
   if (isAdmin()) {
     unsubOwner.push(onSnapshot(collection(db, "salons"), snap => { SALONS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.created || 0) - (b.created || 0)); renderSoon(true); }, () => {}));
     unsubOwner.push(onSnapshot(collection(db, "salonsPrivate"), snap => { const m = {}; snap.docs.forEach(d => { m[d.id] = d.data().ownerEmail || ""; }); OWNERS = m; renderSoon(true); }, () => {}));
@@ -630,6 +640,39 @@ function mbSuggest() {
   return `<div class="sugg"><span class="tiny muted" style="padding:8px 12px 0;display:block;font-weight:600">Из базы клиентов:</span>${list.map(c => `<button class="sugg-row" data-act="mb-pick" data-v="${esc(c.key)}"><span class="stack" style="gap:1px;text-align:left"><b class="small">${esc(c.name)}</b><span class="tiny muted">${esc(c.phone || "без телефона")} · ${visitsTxt(c.visits)}</span></span><b class="small" style="color:var(--accent)">Выбрать</b></button>`).join("")}</div>`;
 }
 function refreshMbSuggest() { const e = document.getElementById("mbSugg"); if (e) e.innerHTML = mbSuggest(); }
+
+/* ================= administrators (only the main owner manages them) ================= */
+function vAdmins() {
+  const A = S.adm || (S.adm = { email: "", scope: "salon" });
+  const here = SALON_KEY, hereName = SET ? SET.name : "этот салон";
+  const scopeTxt = a => a.scope === "all" ? "все салоны и оплаты" : "салон «" + (a.salonName || a.salon) + "»";
+  const rows = ADMINS.map(a => `<div class="cl-row" style="cursor:default"><span class="biglogo" style="width:40px;height:40px;border-radius:20px;font-size:16px;background:#E9E3F1;color:#4B2F66">${esc((a.email || "?").charAt(0).toUpperCase())}</span>
+      <span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small" style="word-break:break-all">${esc(a.email)}</b><span class="tiny muted">Администратор · ${esc(scopeTxt(a))}</span></span>
+      ${S.armed === "adm:" + a.id ? `<button class="btn sm solid-danger" data-act="adm-del" data-v="${esc(a.id)}">Убрать</button>` : `<button class="icon-btn" data-act="adm-arm" data-v="${esc(a.id)}" aria-label="Убрать администратора ${esc(a.email)}" style="color:var(--bad)">${ICON.trash}</button>`}</div>`).join("");
+  return `${header("", "Администраторы", "settings")}
+  <p class="small muted" style="margin-top:-8px">Администратор может то же, что и владелец: все записи, клиенты, отчёт, настройки, мастера.</p>
+  <div class="card" style="padding:0">
+    <div class="cl-row" style="cursor:default;border-top:0"><span class="biglogo" style="width:40px;height:40px;border-radius:20px;font-size:16px">${esc((USER.email || "?").charAt(0).toUpperCase())}</span>
+      <span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small" style="word-break:break-all">${esc(USER.email || "")}</b><span class="tiny muted">Вы</span></span><span class="pill p-free">Владелец</span></div>
+    ${rows}</div>
+  <div class="card stack"><b>Добавить администратора</b>
+    ${fld("admEmail", "Email", A.email, 'type="email" inputmode="email" maxlength="80" autocomplete="off" placeholder="email@mail.ru"')}
+    <div class="seg" role="group" aria-label="Права"><button data-act="adm-scope" data-v="salon" aria-pressed="${A.scope === "salon"}">Этот салон</button><button data-act="adm-scope" data-v="all" aria-pressed="${A.scope === "all"}">Все салоны и оплаты</button></div>
+    <span class="tiny muted">${A.scope === "salon" ? "Записи, клиенты, отчёт и настройки «" + esc(hereName) + "»." : "Как у вас: ещё «Мои салоны», добавление салонов, подтверждение оплат, цена подписки."}</span>
+    ${S.admErr ? `<div class="err-box" role="alert">${esc(S.admErr)}</div>` : ""}
+    <button class="btn" data-act="adm-add" ${S.saving ? "disabled" : ""}>Дать права администратора</button></div>
+  <p class="tiny muted">Администратор открывает ссылку кабинета${here !== "main" ? " этого салона" : ""}: <b style="user-select:all;word-break:break-all">${esc(SID ? salonUrl(SID, true) : location.origin + location.pathname + "#owner")}</b> → «Регистрация» с этим email и подтверждает почту. Добавлять и убирать администраторов можете только вы.</p>`;
+}
+async function addAdmin() {
+  const A = S.adm, em = (A.email || "").trim().toLowerCase(); S.admErr = "";
+  if (!/^[^@\s|]+@[^@\s|]+\.[^@\s|]+$/.test(em)) { S.admErr = "Проверьте email"; render(true); return; }
+  const id = em + "|" + (A.scope === "all" ? "*" : SALON_KEY);
+  S.saving = true; render(true);
+  try { await setDoc(doc(db, "admins", id), { email: em, scope: A.scope, salon: A.scope === "all" ? "*" : SALON_KEY, salonName: A.scope === "all" ? "" : (SET ? SET.name : ""), added: Date.now() });
+    toast("Права выданы: " + em); S.adm = null; }
+  catch (err) { S.admErr = errText(err); }
+  S.saving = false; render(true);
+}
 
 /* ================= notifications: push (app closed) + chime (app open) ================= */
 const PUSH_URL = "https://nailbook-push.gienkidzas.workers.dev";
@@ -1505,6 +1548,7 @@ function vSettings() {
   return `<h1 class="h1" style="font-size:26px">Настройки салона</h1>
   ${isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="salons"><span><b>Мои салоны и оплаты</b><br><span class="tiny muted">${SALONS.length + 1} ${plural(SALONS.length + 1, ["салон", "салона", "салонов"])}${SALONS.filter(m => m.payClaim).length ? " · проверить оплат: " + SALONS.filter(m => m.payClaim).length : ""}</span></span><b>›</b></button>` : ""}
   <button class="card row sub-banner neutral" data-act="go" data-v="notif"><span><b>Уведомления</b><br><span class="tiny muted">${lsGet(lsk("nb-push-on"), false) ? "Включены на этом телефоне" : "Новые записи со звуком"}</span></span><b>›</b></button>
+  ${isRealOwner() ? `<button class="card row sub-banner neutral" data-act="go" data-v="admins"><span><b>Администраторы</b><br><span class="tiny muted">${ADMINS.length ? ADMINS.length + " " + plural(ADMINS.length, ["администратор", "администратора", "администраторов"]) : "Дать права владельца другим"}</span></span><b>›</b></button>` : ""}
   <button class="card row sub-banner neutral" data-act="go" data-v="tpl"><span><b>Тексты сообщений</b><br><span class="tiny muted">Подтверждение, отмена — для WhatsApp, Telegram и SMS</span></span><b>›</b></button>
   ${SID && !isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="sub"><span><b>Подписка</b><br><span class="tiny muted">${esc(subPill(META)[0])}</span></span><b>›</b></button>` : ""}
   <p class="small muted">Изменения увидят все клиенты после нажатия «Сохранить».</p>
@@ -1810,6 +1854,7 @@ function render(keepScroll) {
         case "sub": html = ROLE === "owner" ? vSub() : vJournal(); break;
         case "notif": html = vNotif(); break;
         case "clients": html = vClients(); break;
+        case "admins": html = isRealOwner() ? vAdmins() : vJournal(); break;
         case "client": html = vClient(); break;
         case "clientNew": html = vClientNew(); break;
         case "tpl": html = ROLE === "owner" ? vTpl() : vJournal(); break;
@@ -1884,6 +1929,10 @@ document.addEventListener("click", async e => {
       render(true); break;
     case "open": S.sheet = v; S.armed = null; render(true); break;
     case "close": S.sheet = null; S.armed = null; render(true); break;
+    case "adm-scope": if (S.adm) { S.adm.scope = v; render(true); } break;
+    case "adm-add": addAdmin(); break;
+    case "adm-arm": S.armed = "adm:" + v; render(true); break;
+    case "adm-del": try { await deleteDoc(doc(db, "admins", v)); toast("Права администратора убраны"); } catch (err) { toast(errText(err)); } S.armed = null; render(true); break;
     case "cl-open": S.clKey = v; S.clNote = S.clName = S.clPhone = null; go("client"); break;
     case "cl-new": S.cn = null; S.cnErr = ""; go("clientNew"); break;
     case "cl-save": { const c = clientList().find(x => x.key === S.clKey); if (!c) break;
@@ -1986,6 +2035,7 @@ document.addEventListener("input", e => {
   if (t.id === "fName") { S.form.name = t.value; lsSet("nb-form", S.form); }
   else if (t.id === "fSurname") { S.form.surname = t.value; lsSet("nb-form", S.form); }
   else if (S.mb && t.id === "mbSurname") S.mb.surname = t.value;
+  else if (S.adm && t.id === "admEmail") S.adm.email = t.value;
   else if (t.id === "clQ") { S.clQ = t.value; const box = document.getElementById("clList"); if (box) box.innerHTML = clientRows(S.clQ.trim().length >= 2 ? matchClients(S.clQ) : clientList()); }
   else if (t.id === "clNote") S.clNote = t.value;
   else if (t.id === "clName") S.clName = t.value;
