@@ -124,6 +124,33 @@ service cloud.firestore {
     }
 
     // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера
+    // Защита от двойной записи: онлайн-запись клиента «занимает» 30-минутные ячейки мастера.
+    // Ячейку можно занять, только если её запись больше не стоит на этом времени (отменена или перенесена).
+    match /claims/{cid} {
+      function claimOk(cid) {
+        return request.resource.data.keys().hasOnly(['b','artist','date','t'])
+          && request.resource.data.b is string && request.resource.data.artist is string && request.resource.data.date is string
+          && request.resource.data.t is int && request.resource.data.t >= 0 && request.resource.data.t < 1440 && request.resource.data.t % 30 == 0
+          && cid == request.resource.data.artist + '~' + request.resource.data.date + '~' + string(request.resource.data.t)
+          && bookingCovers(getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.b)).data, request.resource.data);
+      }
+      function bookingCovers(bk, c) {
+        return bk.status in ['pending', 'confirmed'] && bk.artist == c.artist && bk.date == c.date
+          && bk.start < c.t + 30 && c.t < bk.start + bk.dur;
+      }
+      function busyCovers(ob, c) {
+        return ob.artist == c.artist && ob.date == c.date && ob.start < c.t + 30 && c.t < ob.start + ob.dur;
+      }
+      function claimStale(old) {
+        return old.b == request.resource.data.b
+          || !exists(/databases/$(database)/documents/busy/$(old.b))
+          || !busyCovers(get(/databases/$(database)/documents/busy/$(old.b)).data, old);
+      }
+      allow read: if false;
+      allow create: if claimOk(cid);
+      allow update: if claimOk(cid) && claimStale(resource.data);
+      allow delete: if mainOwner();
+    }
     match /clients/{id} {
       allow read, delete: if mainOwner() || myArtist() != '';
       allow create, update: if (mainOwner() || myArtist() != '')
@@ -315,6 +342,33 @@ service cloud.firestore {
       }
 
       // База клиентов (заметки, клиенты, добавленные вручную): только владелец и мастера
+      // Защита от двойной записи: онлайн-запись клиента «занимает» 30-минутные ячейки мастера.
+      // Ячейку можно занять, только если её запись больше не стоит на этом времени (отменена или перенесена).
+      match /claims/{cid} {
+        function claimOk(cid) {
+          return request.resource.data.keys().hasOnly(['b','artist','date','t'])
+            && request.resource.data.b is string && request.resource.data.artist is string && request.resource.data.date is string
+            && request.resource.data.t is int && request.resource.data.t >= 0 && request.resource.data.t < 1440 && request.resource.data.t % 30 == 0
+            && cid == request.resource.data.artist + '~' + request.resource.data.date + '~' + string(request.resource.data.t)
+            && bookingCovers(getAfter(/databases/$(database)/documents/salons/$(sid)/bookings/$(request.resource.data.b)).data, request.resource.data);
+        }
+        function bookingCovers(bk, c) {
+          return bk.status in ['pending', 'confirmed'] && bk.artist == c.artist && bk.date == c.date
+            && bk.start < c.t + 30 && c.t < bk.start + bk.dur;
+        }
+        function busyCovers(ob, c) {
+          return ob.artist == c.artist && ob.date == c.date && ob.start < c.t + 30 && c.t < ob.start + ob.dur;
+        }
+        function claimStale(old) {
+          return old.b == request.resource.data.b
+            || !exists(/databases/$(database)/documents/salons/$(sid)/busy/$(old.b))
+            || !busyCovers(get(/databases/$(database)/documents/salons/$(sid)/busy/$(old.b)).data, old);
+        }
+        allow read: if false;
+        allow create: if claimOk(cid);
+        allow update: if claimOk(cid) && claimStale(resource.data);
+        allow delete: if sOwner();
+      }
       match /clients/{id} {
         allow read, delete: if sOwner() || sArtist() != '';
         allow create, update: if (sOwner() || sArtist() != '')

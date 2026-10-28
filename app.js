@@ -472,6 +472,7 @@ function startOwnerWatch() {
   const denied = () => { ownerDenied = true; renderSoon(true); };
   watchClientDocs();
   staffPushRefresh();
+  serverBackup();
   if (isRealOwner()) unsubOwner.push(onSnapshot(collection(db, "admins"), snap => { ADMINS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.added || 0) - (b.added || 0)); renderSoon(true); }, () => {}));
   if (isAdmin()) {
     unsubOwner.push(onSnapshot(collection(db, "salons"), snap => { SALONS = snap.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.created || 0) - (b.created || 0)); renderSoon(true); }, () => {}));
@@ -794,6 +795,28 @@ async function saveBookImport() {
   }
   S.imp = { done: { book: nb, brk: nr, skip } }; CL_BOOK = null;
 }
+/* ================= «Скачать копию»: the whole salon as one Excel file ================= */
+const ST_RU = { confirmed: "Подтверждена", pending: "Ожидает", cancelled: "Отменена" };
+async function exportExcel() {
+  const X = await loadXlsx();
+  const [bq, uq] = await Promise.all([getDocs(SC("bookings")), getDocs(SC("busy"))]);
+  const books = bq.docs.map(d => Object.assign({ id: d.id }, d.data())).sort((a, b) => (a.date + hm(a.start)).localeCompare(b.date + hm(b.start)));
+  CL_BOOK = books;
+  const rows1 = books.map(b => ({ "Дата": keyRu(b.date), "Начало": hm(b.start), "Конец": hm(b.start + b.dur), "Мастер": artistName(b.artist), "Клиент": b.name || "", "Телефон": b.phone || "",
+    "Услуги": (b.serviceNames || []).join(", "), "Сумма, ₽": Number(b.total || 0), "Статус": ST_RU[b.status] || b.status || "", "Комментарий": b.note || "",
+    "Создана": b.created ? new Date(b.created).toLocaleString("ru-RU") : "", "Номер записи": b.id }));
+  const rows2 = clientList().map(c => ({ "Имя": c.name, "Телефон": c.phone || "", "Визитов": c.visits, "Потрачено, ₽": c.spent, "Отмены": c.cancels, "Последний визит": keyRu(c.last), "Следующая запись": keyRu(c.next),
+    "Заметка": c.note || "", "DIKIDI: записей": c.dk ? c.dk.visits : "", "DIKIDI: потрачено, ₽": c.dk ? c.dk.spent : "", "День рождения": c.dk ? c.dk.bday || "" : "" }));
+  const rows3 = uq.docs.map(d => d.data()).filter(x => x.brk).sort((a, b) => (a.date + hm(a.start)).localeCompare(b.date + hm(b.start)))
+    .map(x => ({ "Дата": keyRu(x.date), "С": hm(x.start), "До": hm(Math.min(x.start + x.dur, 1440)), "Мастер": artistName(x.artist), "Подпись": x.label || "" }));
+  const wb = X.utils.book_new(), add = (rows, name, w) => { const ws = X.utils.json_to_sheet(rows.length ? rows : [{ "": "Пусто" }]); ws["!cols"] = w.map(n => ({ wch: n })); X.utils.book_append_sheet(wb, ws, name); };
+  add(rows1, "Записи", [11, 7, 7, 14, 24, 15, 40, 9, 13, 30, 18, 22]);
+  add(rows2, "Клиенты", [26, 15, 8, 12, 8, 14, 15, 40, 10, 12, 12]);
+  add(rows3, "Перерывы", [11, 7, 7, 14, 30]);
+  const name = ((SET && SET.name) || "Салон").replace(/[\\/:*?"<>|]+/g, " ").trim() + " — копия " + keyRu(todayKey()) + ".xlsx";
+  X.writeFile(wb, name);
+  return books.length;
+}
 async function saveImport() {
   const list = S.imp.list; let fresh = 0, exist = 0;
   for (let i = 0; i < list.length; i += 400) {
@@ -866,6 +889,7 @@ const SALON_KEY = SID || "main";
 const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 const notifPrefs = () => Object.assign({ nb: true, cn: true, am: true, snd: true }, lsGet("nb-notif-prefs", {}));
 let pushSub = null, pushReady = false;
+let BACKUP_AT = 0;
 function pushPost(path, body) {
   return fetch(PUSH_URL + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ salon: SALON_KEY }, body)), keepalive: true })
     .then(r => r.json().catch(() => ({ net: r.status >= 500 }))).catch(() => ({ net: true }));
@@ -899,6 +923,13 @@ async function staffPushOff() {
   const sub = pushSub || await getPushSub(false);
   if (sub) await pushPost("/sub/staff/off", { endpoint: sub.endpoint });
   pushReady = false; lsSet(lsk("nb-push-on"), false); render(true);
+}
+// owner / admin: each time the app opens the server keeps a full copy of the salon (at most every 3 hours, one copy per day for 30 days)
+async function serverBackup() {
+  if (!USER || typeof USER.getIdToken !== "function") return;
+  const token = await USER.getIdToken().catch(() => ""); if (!token) return;
+  const r = await pushPost("/backup", { token });
+  if (r && r.at) { BACKUP_AT = r.at; renderSoon(true); }
 }
 // staff: quietly refresh on each start (the phone may renew its subscription)
 async function staffPushRefresh() {
@@ -1798,6 +1829,7 @@ function vSettings() {
   <button class="card row sub-banner neutral" data-act="go" data-v="notif"><span><b>Уведомления</b><br><span class="tiny muted">${lsGet(lsk("nb-push-on"), false) ? "Включены на этом телефоне" : "Новые записи со звуком"}</span></span><b>›</b></button>
   ${isRealOwner() ? `<button class="card row sub-banner neutral" data-act="go" data-v="admins"><span><b>Администраторы</b><br><span class="tiny muted">${ADMINS.length ? ADMINS.length + " " + plural(ADMINS.length, ["администратор", "администратора", "администраторов"]) : "Дать права владельца другим"}</span></span><b>›</b></button>` : ""}
   <button class="card row sub-banner neutral" data-act="go" data-v="tpl"><span><b>Тексты сообщений</b><br><span class="tiny muted">Подтверждение, отмена — для WhatsApp, Telegram и SMS</span></span><b>›</b></button>
+  <button class="card row sub-banner neutral" data-act="export" ${S.expBusy ? "disabled" : ""}><span><b>${S.expBusy ? "Готовим файл…" : "Скачать копию (Excel)"}</b><br><span class="tiny muted">Все записи, клиенты и перерывы одним файлом${BACKUP_AT ? " · автокопия на сервере: " + esc(new Date(BACKUP_AT).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })) : ""}</span></span><b>↓</b></button>
   ${SID && !isAdmin() ? `<button class="card row sub-banner" data-act="go" data-v="sub"><span><b>Подписка</b><br><span class="tiny muted">${esc(subPill(META)[0])}</span></span><b>›</b></button>` : ""}
   <p class="small muted">Изменения увидят все клиенты после нажатия «Сохранить».</p>
   <div class="card stack">
@@ -2199,6 +2231,9 @@ document.addEventListener("click", async e => {
     case "adm-del": try { await deleteDoc(doc(db, "admins", v)); toast("Права администратора убраны"); } catch (err) { toast(errText(err)); } S.armed = null; render(true); break;
     case "cl-open": S.clKey = v; S.clNote = S.clName = S.clSurname = S.clPhone = null; go("client"); break;
     case "cl-new": S.cn = null; S.cnErr = ""; go("clientNew"); break;
+    case "export": if (ROLE === "owner" && !S.expBusy) { S.expBusy = true; render(true);
+      try { const n = await exportExcel(); toast("Файл сохранён в «Загрузки»: " + n + " " + plural(n, ["запись", "записи", "записей"])); } catch (err) { toast(err && err.message && !/permission/i.test(err.message) ? err.message : errText(err)); }
+      S.expBusy = false; render(true); } break;
     case "imp-open": if (ROLE === "owner") { S.imp = {}; go("clientImport"); } break;
     case "imp-pick": pickFile(".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv", async f => {
       S.imp = { busy: "Читаем файл…" }; render(true);
@@ -2540,20 +2575,39 @@ async function book() {
     status: SET.autoConfirm === false ? "pending" : "confirmed", created: now, updated: now, ...(chair ? { chair: true } : {})
   };
   S.saving = true; render(true);
-  const save = async () => {
+  const save = async (claims = true) => {
     const batch = writeBatch(db);
     batch.set(SD("bookings", id), data);
     batch.set(SD("busy", id), { date: data.date, start: data.start, dur: data.dur, artist: data.artist, ...(chair ? { chair: true } : {}) });
+    // double-booking guard: the database refuses these "claims" if another client has just taken the same half-hours
+    if (claims) for (let t = Math.floor(data.start / 30) * 30, n = 0; t < data.start + data.dur && n < 8; t += 30, n++)
+      batch.set(SD("claims", data.artist + "~" + data.date + "~" + t), { b: id, artist: data.artist, date: data.date, t });
     await batch.commit();
   };
-  try {
-    try { await save(); }
+  const denied = err => /permission/i.test(String(err && (err.code || err.message)));
+  const trySave = async claims => {
+    try { await save(claims); }
     catch (err) {
       // older database rules only accept "pending" — fall back so the booking is never lost
-      if (data.status !== "confirmed" || !/permission/i.test(String(err && (err.code || err.message)))) throw err;
-      data.status = "pending"; await save();
+      if (data.status !== "confirmed" || !denied(err)) throw err;
+      data.status = "pending"; await save(claims);
     }
-  } catch (err) { S.saving = false; toast(errText(err)); render(true); return; }
+  };
+  try {
+    try { await trySave(true); }
+    catch (err) {
+      if (!denied(err)) throw err;
+      // refused: was the time really taken a moment ago? ask the server for this day's schedule
+      const q = await getDocs(query(SC("busy"), where("date", "==", data.date)));
+      const taken = q.docs.some(d => { const x = d.data(); return d.id !== id && x.start < data.start + data.dur && data.start < x.start + x.dur && (x.artist === data.artist); });
+      if (taken) throw Object.assign(new Error("taken"), { taken: true });
+      data.status = SET.autoConfirm === false ? "pending" : "confirmed";
+      await trySave(false);   // time is free — save without the guard (e.g. database rules not updated yet)
+    }
+  } catch (err) {
+    S.saving = false;
+    if (err && err.taken) { toast("Это время только что заняли. Выберите другое."); S.time = null; go("time"); return; }
+    toast(errText(err)); render(true); return; }
   S.saving = false;
   const ids = lsGet(lsk("nb-my"), []); ids.unshift(id); lsSet(lsk("nb-my"), ids.slice(0, 30));
   MY[id] = Object.assign({ id }, data); watchMine();

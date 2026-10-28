@@ -46,6 +46,19 @@ async function fsGet(path, token) {
   if (!r.ok) return { status: r.status, data: null };
   const j = await r.json(); return { status: 200, data: obj(j.fields || {}) };
 }
+// every document of one collection (Firestore REST, read with the owner's own sign-in, so the database rules still apply)
+async function fsList(salon, coll, token) {
+  const out = {}; let pt = "";
+  for (let i = 0; i < 100; i++) {
+    const r = await fetch(FS + pfx(salon) + coll + "?pageSize=300" + (pt ? "&pageToken=" + encodeURIComponent(pt) : ""), { headers: { Authorization: "Bearer " + token } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    (j.documents || []).forEach(d => { out[d.name.split("/").pop()] = obj(d.fields || {}); });
+    if (!j.nextPageToken) return out;
+    pt = j.nextPageToken;
+  }
+  return out;
+}
 async function busyOn(salon, date) {
   const parent = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/${DBID}/documents` + (salon === "main" ? "" : `/salons/${salon}`);
   const r = await fetch(parent + ":runQuery", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -157,6 +170,23 @@ async function handle(req, env) {
     await env.PUSH.put(`st:${salon}:${await sha(b.sub.endpoint)}`, JSON.stringify({ sub: b.sub, role: who.role, artist: who.artist || "", uid: who.uid, prefs: { nb: !!prefs.nb, cn: !!prefs.cn, am: !!prefs.am } }));
     return json(req, { ok: true, role: who.role });
   }
+  // owner / admin opened the app: keep a full copy of the salon — one per day, kept 30 days (refreshed at most every 3 hours)
+  if (url.pathname === "/backup") {
+    const who = await staffRole(salon, b.token, env);
+    if (!who || who.role !== "owner") return json(req, { error: "not owner" }, 403);
+    const last = Number(await env.PUSH.get(`bk:${salon}:last`) || 0);
+    if (Date.now() - last < 3 * 3600e3) return json(req, { ok: true, at: last, skipped: true });
+    const data = { salon, at: Date.now(), by: who.uid };
+    for (const c of ["bookings", "busy", "clients", "reviews", "settings", "private"]) {
+      const d = await fsList(salon, c, b.token);
+      if (d === null && (c === "bookings" || c === "clients")) return json(req, { error: "read " + c }, 502);
+      data[c] = d || {};
+    }
+    const day = new Date(Date.now() + 2 * 3600e3).toISOString().slice(0, 10);   // salon's local date (Kaliningrad / Moscow)
+    await env.PUSH.put(`bk:${salon}:${day}`, JSON.stringify(data), { expirationTtl: 31 * 86400 });
+    await env.PUSH.put(`bk:${salon}:last`, String(data.at));
+    return json(req, { ok: true, at: data.at, bookings: Object.keys(data.bookings).length, clients: Object.keys(data.clients).length });
+  }
   if (url.pathname === "/sub/staff/off") {
     if (!b.endpoint) return json(req, { error: "bad" }, 400);
     await env.PUSH.delete(`st:${salon}:${await sha(b.endpoint)}`); return json(req, { ok: true });
@@ -232,7 +262,7 @@ async function morning(env) {
   do { const l = await env.PUSH.list({ prefix: "st:", cursor }); cursor = l.list_complete ? null : l.cursor;
     for (const k of l.keys) { const salon = k.name.split(":")[1]; (bySalon[salon] = bySalon[salon] || []).push(k.name); } } while (cursor);
   for (const salon in bySalon) {
-    const busy = await busyOn(salon, today);
+    const busy = (await busyOn(salon, today)).filter(x => !x.brk);   // breaks / days off are not bookings
     for (const key of bySalon[salon]) {
       const s = await env.PUSH.get(key, "json"); if (!s || !s.prefs.am) continue;
       const mine = s.role === "owner" ? busy : busy.filter(x => x.artist === s.artist);
