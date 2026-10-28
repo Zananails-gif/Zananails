@@ -272,3 +272,5 @@ textarea{font:inherit;font-size:16px;border:1px solid var(--line2);border-radius
 .mp-row{display:grid;grid-template-columns:minmax(0,1fr) 120px;gap:8px;align-items:center;font-size:14px}
 .a-break{background:repeating-linear-gradient(135deg,var(--soft2),var(--soft2) 6px,var(--surface) 6px,var(--surface) 12px);color:var(--muted);border-left:3px solid var(--line2)}
 .a-break b{color:var(--fg)}
+.msgbtns:has(> :nth-child(4)){grid-template-columns:1fr 1fr}
+.msg-max svg{color:#6B4CE6}

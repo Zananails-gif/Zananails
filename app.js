@@ -77,6 +77,7 @@ const ICON = {
   eye: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   eyeOff: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.5-.6 4.9-1.4"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   wa: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 20.5l1.3-4A8.5 8.5 0 1 1 8 19.3z"/><path d="M9 8.5c0 3.5 2.5 6.5 6.5 6.5l1-1.5-2-1-1 1c-1.2-.4-2.6-1.8-3-3l1-1-1-2z"/></svg>',
+  max: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3z"/><path d="M8 15V9l4 4 4-4v6"/></svg>',
   tg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/><path d="M9 13l9-7"/></svg>',
   grid: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
   chart: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
@@ -87,7 +88,7 @@ const ICON = {
 /* ================= default salon settings ================= */
 function defaultSettings() {
   return {
-    name: "Название салона", area: "Город, адрес", phone: "", telegram: "", logo: "",
+    name: "Название салона", area: "Город, адрес", phone: "", telegram: "", max: "", logo: "",
     open: 9 * 60, close: 19 * 60, closedDays: [0], pediChairs: 1, autoConfirm: true, leadMin: 120,
     artists: [{ id: "a1", name: "Мастер 1" }, { id: "a2", name: "Мастер 2" }],
     services: [
@@ -277,6 +278,11 @@ function tgLink(user, text) {
   return u ? "https://t.me/" + u + "?text=" + encodeURIComponent(text)
     : "https://t.me/share/url?url=" + encodeURIComponent(appLink()) + "&text=" + encodeURIComponent(text);
 }
+function copyFallback(t) { try { const a = document.createElement("textarea"); a.value = t; a.style.cssText = "position:fixed;left:-9999px"; document.body.appendChild(a); a.select(); const ok = document.execCommand("copy"); a.remove(); return ok; } catch (e) { return false; } }
+// MAX (Russian messenger): no "open chat by phone" link and no ready text, so the button copies the text and opens MAX
+const maxUrl = u => { u = String(u || "").trim(); if (!u) return ""; if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+  try { const x = new URL(u); return /(^|\.)max\.ru$/i.test(x.hostname) ? "https://max.ru" + x.pathname.replace(/\/+$/, "") + x.search : ""; } catch (e) { return ""; } };
+const maxBtn = (url, text, phone) => `<button class="btn sm ghost msg-max" data-act="max" data-u="${esc(url || "https://max.ru/")}" data-v="${esc(text || "")}" data-p="${esc(phone || "")}">${ICON.max}MAX</button>`;
 function bookingLine(b) {
   return longDate(b.date).toLowerCase() + " в " + hm(b.start) + ", " + ((b.serviceNames || []).join(", ") || "услуга") + ", мастер " + artistName(b.artist);
 }
@@ -301,7 +307,7 @@ function vTpl() {
   const sample = { name: "Мария", date: addDays(todayKey(), 2), start: 780, serviceNames: [(SET.services[0] || {}).name || "Маникюр"], artist: (SET.artists[0] || {}).id, phone: "+7 900 555-66-77", status: k === "cancel" ? "cancelled" : "confirmed" };
   const title = { ok: "Запись подтверждена", cancel: "Запись отменена", salon: "Клиент пишет салону" }[k];
   return `${header("", "Тексты сообщений", "settings")}
-  <p class="small muted" style="margin-top:-8px">Эти тексты открываются в WhatsApp, Telegram или SMS по кнопкам «Сообщить клиенту». Перед отправкой текст можно поправить.</p>
+  <p class="small muted" style="margin-top:-8px">Эти тексты открываются в WhatsApp, Telegram, SMS или MAX по кнопкам «Сообщить клиенту». Перед отправкой текст можно поправить.</p>
   <div class="seg" role="group" aria-label="Какое сообщение">${tabs}</div>
   <div class="card stack"><b>${title}</b>
     <textarea id="tplText" rows="6" maxlength="600" aria-label="Текст сообщения">${esc(d[k])}</textarea>
@@ -320,15 +326,15 @@ async function saveTpl() {
   catch (err) { toast(errText(err)); }
   S.saving = false; render(true);
 }
-function msgButtons(label, wa, tg, sms) {
-  if (!wa && !tg && !sms) return "";
+function msgButtons(label, wa, tg, sms, mx) {
+  if (!wa && !tg && !sms && !mx) return "";
   return `<div class="stack" style="gap:6px"><span class="tiny muted" style="font-weight:600">${label}</span><div class="msgbtns">
     ${wa ? `<a class="btn sm ghost msg-wa" href="${esc(wa)}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a>` : ""}
     ${tg ? `<a class="btn sm ghost msg-tg" href="${esc(tg)}" target="_blank" rel="noopener">${ICON.tg}Telegram</a>` : ""}
-    ${sms ? `<a class="btn sm ghost msg-sms" href="${esc(sms)}">${ICON.sms}SMS</a>` : ""}</div></div>`;
+    ${sms ? `<a class="btn sm ghost msg-sms" href="${esc(sms)}">${ICON.sms}SMS</a>` : ""}${mx || ""}</div></div>`;
 }
-const salonMsgButtons = b => msgButtons("Написать салону", waLink(SET.phone, msgToSalon(b)), tgLink(SET.telegram, msgToSalon(b)), smsLink(SET.phone, msgToSalon(b)));
-const clientMsgButtons = b => b.phone ? msgButtons(b.status === "cancelled" ? "Сообщить клиенту об отмене" : "Сообщить клиенту о записи", waLink(b.phone, msgToClient(b)), tgLink("", msgToClient(b)), smsLink(b.phone, msgToClient(b))) : "";
+const salonMsgButtons = b => msgButtons("Написать салону", waLink(SET.phone, msgToSalon(b)), tgLink(SET.telegram, msgToSalon(b)), smsLink(SET.phone, msgToSalon(b)), maxUrl(SET.max) ? maxBtn(maxUrl(SET.max), msgToSalon(b), "") : "");
+const clientMsgButtons = b => b.phone ? msgButtons(b.status === "cancelled" ? "Сообщить клиенту об отмене" : "Сообщить клиенту о записи", waLink(b.phone, msgToClient(b)), tgLink("", msgToClient(b)), smsLink(b.phone, msgToClient(b)), maxBtn("", msgToClient(b), b.phone)) : "";
 
 /* ================= toast ================= */
 let toastTimer;
@@ -618,7 +624,7 @@ function vClient() {
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:16px;user-select:all">${esc(c.phone || "Телефон не указан")}</b>${fav ? `<span class="tiny muted">обычно к мастеру ${esc(artistName(fav))}</span>` : ""}</div>
     ${c.phone ? `<div class="msgbtns"><a class="btn sm ghost" href="tel:${esc(c.phone.replace(/[^\d+]/g, ""))}">${ICON.phone}Звонок</a>
       <a class="btn sm ghost msg-wa" href="${esc(waLink(c.phone, ""))}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a>
-      <a class="btn sm ghost msg-sms" href="${esc(smsLink(c.phone, ""))}">${ICON.sms}SMS</a></div>` : ""}
+      <a class="btn sm ghost msg-sms" href="${esc(smsLink(c.phone, ""))}">${ICON.sms}SMS</a>${maxBtn("", "", c.phone)}</div>` : ""}
   </div>
   <div class="card stack"><b>Заметка <span class="tiny muted" style="font-weight:600">(видят только мастера и владелец)</span></b>
     <textarea id="clNote" rows="3" maxlength="1000" placeholder="Например: любимые оттенки, длина, аллергии">${esc(S.clNote != null ? S.clNote : c.note)}</textarea>
@@ -1850,7 +1856,8 @@ function vSettings() {
     <label class="field" for="dArea">Город и адрес<input id="dArea" data-d="area" maxlength="120" value="${esc(D.area)}"></label>
     <label class="field" for="dPhone">Телефон салона (с кодом страны, для звонков и WhatsApp)<input id="dPhone" data-d="phone" type="tel" maxlength="25" value="${esc(D.phone)}" placeholder="+7 900 000-00-00"></label>
     <label class="field" for="dTg">Telegram салона (необязательно)<input id="dTg" data-d="telegram" maxlength="40" autocomplete="off" value="${esc(D.telegram || "")}" placeholder="@zananails"></label>
-    <p class="tiny muted">Клиенты смогут одним нажатием отправить вам свою запись в WhatsApp (на телефон салона) или в Telegram (на этот ник).</p>
+    <label class="field" for="dMax">MAX салона — ссылка на профиль (необязательно)<input id="dMax" data-d="max" maxlength="120" autocomplete="off" inputmode="url" value="${esc(D.max || "")}" placeholder="https://max.ru/u/…"></label>
+    <p class="tiny muted">Ссылку возьмите в MAX: Профиль → «Поделиться» → «Скопировать ссылку». Клиенты смогут одним нажатием отправить вам свою запись в WhatsApp (на телефон салона), Telegram (на этот ник) или MAX.</p>
   </div>
   <div class="card stack">
     <h2 class="h2">Часы работы</h2>
@@ -2190,6 +2197,11 @@ document.addEventListener("click", async e => {
   if (!el) return;
   const v = el.dataset.v;
   switch (el.dataset.act) {
+    case "max": {   // copy first (still inside the tap), then open MAX
+      const t = v || el.dataset.p || "", ph = el.dataset.p || "";
+      const done = ok => toast(!ok ? "Откройте MAX и напишите" + (ph ? " на номер " + ph : "") : v ? (ph ? "Текст скопирован. В MAX найдите клиента по номеру " + ph + " и вставьте текст" : "Текст скопирован — вставьте его в чат MAX") : "Номер скопирован — вставьте его в поиск MAX");
+      try { if (t && navigator.clipboard) navigator.clipboard.writeText(t).then(() => done(true), () => done(false)); else done(!!t && copyFallback(t)); } catch (err) { done(false); }
+      window.open(el.dataset.u || "https://max.ru/", "_blank", "noopener"); break; }
     case "go":
       if (v === "artist" && !S.sel.length) return;
       if (v === "details" && S.time == null) return;
@@ -2391,7 +2403,7 @@ document.addEventListener("input", e => {
   else if (t.id === "wTitle" && S.workDraft) S.workDraft.title = t.value;
   else if (t.dataset.d && S.draft) {
     const D = S.draft, p = t.dataset.d.split(":");
-    if (p[0] === "name" || p[0] === "area" || p[0] === "phone" || p[0] === "telegram") D[p[0]] = t.value;
+    if (p[0] === "name" || p[0] === "area" || p[0] === "phone" || p[0] === "telegram" || p[0] === "max") D[p[0]] = t.value;
     else if (p[0] === "open" || p[0] === "close") { const m = parseHM(t.value); if (m != null) D[p[0]] = m; }
     else if (p[0] === "leadMin") D.leadMin = parseInt(t.value, 10) || 0;
     else if (p[0] === "pediChairs") { const n = parseInt(t.value, 10); D.pediChairs = isNaN(n) ? 0 : n; }
@@ -2646,6 +2658,7 @@ async function saveSettings() {
   const D = S.draft;
   const fail = msg => { S.draftErr = msg; refreshChrome(); };
   D.name = (D.name || "").trim(); D.area = (D.area || "").trim(); D.phone = (D.phone || "").trim(); D.telegram = tgUser(D.telegram);
+  if ((D.max || "").trim() && !maxUrl(D.max)) return fail("Ссылка MAX должна начинаться с https://max.ru/"); D.max = maxUrl(D.max);
   D.artists = D.artists.map(a => ({ id: a.id, name: (a.name || "").trim(), email: (a.email || "").trim().toLowerCase() }));
   D.services = D.services.map(s => { const mp = {}; Object.keys(s.mp || {}).forEach(a => { const v = Math.round(Number(s.mp[a]) || 0); if (v > 0 && D.artists.some(x => x.id === a)) mp[a] = v; });
     return Object.assign({ id: s.id, cat: s.cat, name: (s.name || "").trim(), dur: Math.round((Number(s.dur) || 0) / 5) * 5, price: Math.round(Number(s.price) || 0) }, Object.keys(mp).length ? { mp } : {}); });
