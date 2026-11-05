@@ -1602,7 +1602,7 @@ function vJournal() {
   const nm = nowMin();
   const nowLine = (k === todayKey() && nm >= OPEN && nm <= CLOSE) ? `<div class="now" style="top:${(nm - OPEN) / 60 * H}px"></div>` : "";
   return `<div class="jhead"><div><div class="step">Журнал записей</div><h1 class="h1">${esc(k === todayKey() ? "Сегодня, " + shortDate(k) : longDate(k))}</h1></div>
-    <div class="btns"><button class="back" data-act="jday" data-v="-1" aria-label="Предыдущий день">${ICON.back}</button><button class="back" data-act="jday" data-v="1" aria-label="Следующий день">${ICON.next}</button></div></div>
+    <div class="btns"><button class="back" data-act="jday" data-v="-1" aria-label="Предыдущий день">${ICON.back}</button><button class="back" data-act="jday" data-v="1" aria-label="Следующий день">${ICON.next}</button><button class="back" data-act="cal-open" aria-label="Календарь: месяц и год">${ICON.cal}</button></div></div>
   ${subBanner()}
   ${notifCard()}
   <div class="btns"><button class="btn" style="flex:2" data-act="mb-new">${ICON.plus}Записать клиента</button><button class="btn ghost" style="flex:1" data-act="brk-new">Перерыв</button></div>
@@ -1726,6 +1726,99 @@ async function saveBreak() {
     toast(ok.length === 1 ? "Перерыв добавлен" : "Добавлено перерывов: " + ok.length + (clash.length ? " (пропущено дней с записями: " + clash.length + ")" : ""));
     S.saving = false; S.brk = null; S.jDate = K.date; watchJday(); go("journal"); return;
   } catch (err) { S.brkErr = errText(err); }
+  S.saving = false; render(true);
+}
+/* ---------- month / year calendar: overview + days off and breaks for many days at once ---------- */
+const MON_N = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const ymd = (y, m, d) => y + "-" + String(m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+function calArtists() { const C = S.cal; return ROLE === "master" ? [MY_ARTIST] : C.artist === "*" ? SET.artists.map(a => a.id) : [C.artist]; }
+function dayInfo(k, aids) {
+  const its = BUSY.filter(x => x.date === k && aids.includes(x.artist));
+  const brk = its.filter(x => x.brk), off = aids.length && aids.every(a => brk.some(x => x.artist === a && x.start <= SET.open && x.start + x.dur >= SET.close));
+  return { n: its.filter(x => !x.brk).length, brk: brk.length, off };
+}
+function monthGrid(y, m, mini) {
+  const C = S.cal, aids = calArtists(), first = new Date(y, m, 1), lead = (first.getDay() + 6) % 7, days = new Date(y, m + 1, 0).getDate(), today = todayKey();
+  let h = mini ? "" : ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map(d => `<span class="cal-wd">${d}</span>`).join("");
+  for (let i = 0; i < lead; i++) h += `<span></span>`;
+  for (let d = 1; d <= days; d++) {
+    const k = ymd(y, m, d), past = k < today, closed = isClosed(k), I = dayInfo(k, aids), sel = C.sel.includes(k);
+    const cls = "cal-d" + (past ? " past" : "") + (closed ? " closed" : "") + (I.off ? " off" : I.brk ? " brk" : "") + (k === today ? " today" : "") + (sel ? " sel" : "");
+    if (mini) { h += `<span class="${cls}">${d}</span>`; continue; }
+    const sub = I.off ? "выходной" : closed ? "закрыто" : [I.n ? I.n + " зап." : "", I.brk ? "перерыв" : ""].filter(Boolean).join(" · ");
+    h += past ? `<span class="${cls}"><b>${d}</b></span>`
+      : `<button class="${cls}" data-act="cal-day" data-v="${k}" aria-pressed="${sel}" aria-label="${d} ${MONG[m]}${sub ? ", " + sub : ""}"><b>${d}</b><i>${esc(sub)}</i></button>`;
+  }
+  return `<div class="${mini ? "cal-mini" : "cal-grid"}">${h}</div>`;
+}
+function vCal() {
+  const C = S.cal, [y, m] = C.ym.split("-").map(Number), own = ROLE === "master";
+  const artChips = own ? "" : `<div class="card stack" style="padding:12px 14px"><b class="small">Мастер</b>${chips("cal-artist", [["*", SET.artists.length > 1 ? "Все мастера" : "Салон"]].concat(SET.artists.length > 1 ? SET.artists.map(a => [a.id, a.name]) : []), C.artist, "Мастер")}</div>`;
+  const nav = C.mode === "year"
+    ? `<div class="jhead"><h2 class="h2" style="margin:0">${y} год</h2><div class="btns"><button class="back" data-act="cal-y" data-v="-1" aria-label="Предыдущий год">${ICON.back}</button><button class="back" data-act="cal-y" data-v="1" aria-label="Следующий год">${ICON.next}</button></div></div>`
+    : `<div class="jhead"><h2 class="h2" style="margin:0">${MON_N[m - 1]} ${y}</h2><div class="btns"><button class="back" data-act="cal-m" data-v="-1" aria-label="Предыдущий месяц">${ICON.back}</button><button class="back" data-act="cal-m" data-v="1" aria-label="Следующий месяц">${ICON.next}</button></div></div>`;
+  const body = C.mode === "year"
+    ? `<div class="cal-year">${MON_N.map((nm, i) => `<button class="card cal-ym" data-act="cal-goto" data-v="${y}-${String(i + 1).padStart(2, "0")}"><b class="small">${nm}</b>${monthGrid(y, i, true)}</button>`).join("")}</div>
+       <p class="tiny muted">Нажмите на месяц, чтобы открыть его и выбрать дни.</p>`
+    : `${monthGrid(y, m - 1, false)}
+       <div class="chips chips-wrap"><button class="chip" data-act="cal-range" aria-pressed="${!!C.range}">${C.range && C.rangeFrom ? "Период: выберите последний день" : "Выбрать период"}</button><button class="chip" data-act="cal-allwork">Все рабочие дни месяца</button>${C.sel.length ? `<button class="chip" data-act="cal-clear">Снять выбор</button>` : ""}</div>`;
+  const n = C.sel.length, aids = calArtists();
+  const hasBrk = C.sel.some(k => dayInfo(k, aids).brk);
+  const times = []; for (let t = SET.open; t < SET.close; t += STEP) times.push(t);
+  const durs = []; for (let mm = 15; mm <= SET.close - SET.open; mm += 15) durs.push(mm);
+  const panel = !n ? `<p class="tiny muted">Нажимайте на дни, чтобы выбрать их (можно в разных месяцах), затем добавьте выходной или перерыв сразу на все.</p>` : `
+  <div class="card stack cal-panel">
+    <b>Выбрано: ${n} ${plural(n, ["день", "дня", "дней"])}</b><span class="tiny muted">${esc(C.sel.slice().sort().slice(0, 6).map(k => +k.slice(8) + " " + MONG[+k.slice(5, 7) - 1].slice(0, 3)).join(", "))}${n > 6 ? " …" : ""}${own ? "" : " · " + esc(C.artist === "*" ? (SET.artists.length > 1 ? "все мастера" : "салон") : artistName(C.artist))}</span>
+    <div class="chips chips-wrap"><button class="chip" data-act="cal-kind" data-v="off" aria-pressed="${C.kind === "off"}">Выходной (весь день)</button><button class="chip" data-act="cal-kind" data-v="brk" aria-pressed="${C.kind === "brk"}">Перерыв</button></div>
+    ${C.kind === "brk" ? `<div class="grid2"><label class="field" for="calStart">С<select id="calStart">${times.map(t => `<option value="${t}" ${t === C.start ? "selected" : ""}>${hm(t)}</option>`).join("")}</select></label>
+      <label class="field" for="calDur">Сколько<select id="calDur">${durs.map(mm => `<option value="${mm}" ${mm === C.dur ? "selected" : ""}>${durTxt(mm)}</option>`).join("")}</select></label></div>` : ""}
+    <label class="field" for="calLabel">Название (необязательно)<input id="calLabel" maxlength="40" autocomplete="off" value="${esc(C.label || "")}" placeholder="${C.kind === "off" ? "Отпуск, праздник…" : "Обед…"}"></label>
+    ${S.calErr ? `<div class="err-box" role="alert">${esc(S.calErr)}</div>` : ""}
+    <button class="btn" data-act="cal-save" ${S.saving ? "disabled" : ""}>${S.saving ? "Сохраняем…" : (C.kind === "off" ? "Сделать выходными" : "Добавить перерыв") + " — " + n + " " + plural(n, ["день", "дня", "дней"])}</button>
+    ${hasBrk ? `<button class="btn ghost" data-act="${S.armed === "cal-del" ? "cal-del" : "cal-arm"}" ${S.saving ? "disabled" : ""} style="color:var(--bad)">${S.armed === "cal-del" ? "Нажмите ещё раз — убрать перерывы и выходные" : "Убрать перерывы и выходные в эти дни"}</button>` : ""}
+    <span class="tiny muted">Дни, где у мастера уже есть клиенты в это время, пропускаются — записи не теряются.</span>
+  </div>`;
+  return `${header("", "Календарь", "journal")}
+  <div class="chips" role="group" aria-label="Вид"><button class="chip" data-act="cal-mode" data-v="month" aria-pressed="${C.mode !== "year"}">Месяц</button><button class="chip" data-act="cal-mode" data-v="year" aria-pressed="${C.mode === "year"}">Год</button></div>
+  ${artChips}${nav}${body}
+  <div class="legend"><span><i class="cal-lg off"></i>Выходной</span><span><i class="cal-lg brk"></i>Перерыв</span><span><i class="cal-lg sel"></i>Выбрано</span></div>
+  ${panel}`;
+}
+function calReadForm() {
+  const C = S.cal; if (!C) return;
+  const a = document.getElementById("calStart"), b = document.getElementById("calDur"), l = document.getElementById("calLabel");
+  if (a) C.start = Number(a.value); if (b) C.dur = Number(b.value); if (l) C.label = l.value;
+}
+async function saveCalBulk() {
+  calReadForm(); const C = S.cal; S.calErr = "";
+  const aids = calArtists().filter(Boolean); if (!aids.length) { S.calErr = "Выберите мастера"; render(true); return; }
+  const start = C.kind === "off" ? SET.open : C.start, dur = C.kind === "off" ? SET.close - SET.open : Math.min(C.dur, SET.close - C.start);
+  if (dur <= 0) { S.calErr = "Проверьте время"; render(true); return; }
+  const label = (C.label || "").trim().slice(0, 40) || (C.kind === "off" ? "Выходной" : "");
+  const add = [], clash = [], dup = [];
+  C.sel.slice().sort().forEach(k => aids.forEach(a => {
+    const same = BUSY.some(x => x.brk && x.artist === a && x.date === k && x.start <= start && x.start + x.dur >= start + dur);
+    if (same) dup.push(k); else if (!artistFree(a, k, start, dur)) clash.push(k); else add.push({ date: k, start, dur, artist: a, brk: true, label });
+  }));
+  if (!add.length) { S.calErr = clash.length ? "Во все выбранные дни у мастера уже есть клиенты в это время — ничего не добавлено." : "Эти дни уже отмечены."; render(true); return; }
+  S.saving = true; render(true);
+  try {
+    for (let i = 0; i < add.length; i += 400) { const batch = writeBatch(db); add.slice(i, i + 400).forEach(x => batch.set(doc(SC("busy")), x)); await batch.commit(); }
+    const skipped = [...new Set(clash)].length;
+    toast((C.kind === "off" ? "Выходных добавлено: " : "Перерывов добавлено: ") + add.length + (skipped ? " · пропущено дней с клиентами: " + skipped : ""));
+    C.sel = []; C.label = "";
+  } catch (err) { S.calErr = errText(err); }
+  S.saving = false; render(true);
+}
+async function delCalBulk() {
+  const C = S.cal, aids = calArtists(); S.armed = null;
+  const del = BUSY.filter(x => x.brk && C.sel.includes(x.date) && aids.includes(x.artist) && (ROLE === "owner" || x.artist === MY_ARTIST));
+  if (!del.length) { render(true); return; }
+  S.saving = true; render(true);
+  try {
+    for (let i = 0; i < del.length; i += 400) { const batch = writeBatch(db); del.slice(i, i + 400).forEach(x => batch.delete(SD("busy", x.id))); await batch.commit(); }
+    toast("Убрано перерывов и выходных: " + del.length); C.sel = [];
+  } catch (err) { S.calErr = errText(err); }
   S.saving = false; render(true);
 }
 /* ---------- reschedule a booking (new date / time) ---------- */
@@ -2055,7 +2148,7 @@ function vReportMaster(mine) {
 
 function ownerTabs() {
   const n = PENDING.length + NEWB.filter(b => b.status === "confirmed" && (b.created || 0) > inboxSeen).length;
-  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") || (v === "clients" && (S.view === "client" || S.view === "clientNew" || S.view === "clientImport")) ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  const t = (v, ic, lab) => `<button class="tab" data-act="go" data-v="${v}" ${S.view === v || (v === "report" && S.view === "reportMaster") || (v === "journal" && (S.view === "cal" || S.view === "break")) || (v === "clients" && (S.view === "client" || S.view === "clientNew" || S.view === "clientImport")) ? 'aria-current="page"' : ""}>${ic}${lab}${v === "inbox" && n ? `<span class="badge">${n}</span>` : ""}</button>`;
   return `<nav class="tabs" aria-label="Меню салона">${t("journal", ICON.cal, "Журнал")}${t("inbox", ICON.bell, "Новые")}${t("clients", ICON.users, "Клиенты")}${t("report", ICON.chart, ROLE === "master" ? "Заработок" : "Отчёт")}${t("works", ICON.grid, "Работы")}${t("settings", ICON.gear, ROLE === "master" ? "Аккаунт" : "Настройки")}</nav>`;
 }
 function saveBar() {
@@ -2162,6 +2255,7 @@ function render(keepScroll) {
         case "tpl": html = ROLE === "owner" ? vTpl() : vJournal(); break;
         case "resched": html = S.rs ? vResched() : vJournal(); break;
         case "break": html = S.brk ? vBreak() : vJournal(); break;
+        case "cal": html = S.cal ? vCal() : vJournal(); break;
         case "inbox": html = vInbox(); break;
         case "works": html = vWorks(); break;
         case "manual": html = S.mb ? vManual() : vJournal(); break;
@@ -2286,6 +2380,30 @@ document.addEventListener("click", async e => {
     case "brk-artist": if (S.brk) { S.brk.artist = v; render(true); } break;
     case "brk-all": if (S.brk) { S.brk.allDay = !S.brk.allDay; render(true); } break;
     case "brk-save": saveBreak(); break;
+    case "cal-open": { const k = S.jDate < todayKey() ? todayKey() : S.jDate;
+      S.cal = { ym: k.slice(0, 7), mode: "month", sel: [], artist: ROLE === "master" ? MY_ARTIST : (SET.artists.length === 1 ? SET.artists[0].id : "*"), kind: "off",
+        start: Math.min(Math.max(SET.open, 13 * 60), SET.close - 60), dur: 60, label: "", range: false, rangeFrom: null }; S.calErr = ""; go("cal"); break; }
+    case "cal-mode": if (S.cal) { calReadForm(); S.cal.mode = v; render(true); } break;
+    case "cal-artist": if (S.cal) { calReadForm(); S.cal.artist = v; render(true); } break;
+    case "cal-kind": if (S.cal) { calReadForm(); S.cal.kind = v; S.calErr = ""; render(true); } break;
+    case "cal-m": if (S.cal) { calReadForm(); const [y, m] = S.cal.ym.split("-").map(Number), d = new Date(y, m - 1 + Number(v), 1); S.cal.ym = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); render(true); } break;
+    case "cal-y": if (S.cal) { const [y, m] = S.cal.ym.split("-"); S.cal.ym = (Number(y) + Number(v)) + "-" + m; render(true); } break;
+    case "cal-goto": if (S.cal) { S.cal.ym = v; S.cal.mode = "month"; render(true); } break;
+    case "cal-range": if (S.cal) { calReadForm(); S.cal.range = !S.cal.range; S.cal.rangeFrom = null; render(true); } break;
+    case "cal-clear": if (S.cal) { calReadForm(); S.cal.sel = []; S.calErr = ""; render(true); } break;
+    case "cal-allwork": if (S.cal) { calReadForm(); const [y, m] = S.cal.ym.split("-").map(Number), n = new Date(y, m, 0).getDate(), t = todayKey();
+      for (let d = 1; d <= n; d++) { const k = ymd(y, m - 1, d); if (k >= t && !isClosed(k) && !S.cal.sel.includes(k)) S.cal.sel.push(k); } render(true); } break;
+    case "cal-day": if (S.cal) { calReadForm(); const C = S.cal; S.calErr = "";
+      if (C.range) {
+        if (!C.rangeFrom) { C.rangeFrom = v; if (!C.sel.includes(v)) C.sel.push(v); }
+        else { let a = C.rangeFrom < v ? C.rangeFrom : v; const b = C.rangeFrom < v ? v : C.rangeFrom;
+          for (let i = 0; a <= b && i < 400; a = addDays(a, 1), i++) if (!isClosed(a) && !C.sel.includes(a)) C.sel.push(a);
+          C.range = false; C.rangeFrom = null; }
+      } else C.sel = C.sel.includes(v) ? C.sel.filter(x => x !== v) : C.sel.concat(v);
+      render(true); } break;
+    case "cal-save": if (S.cal && !S.saving) saveCalBulk(); break;
+    case "cal-arm": calReadForm(); S.armed = "cal-del"; render(true); setTimeout(() => { if (S.armed === "cal-del") { S.armed = null; render(true); } }, 4000); break;
+    case "cal-del": if (S.cal && !S.saving) delCalBulk(); break;
     case "brk-arm": S.armed = "brk:" + v; render(true); setTimeout(() => { if (S.armed === "brk:" + v) { S.armed = null; render(true); } }, 4000); break;
     case "brk-del": try { await deleteDoc(SD("busy", v)); toast("Перерыв удалён"); } catch (err) { toast(errText(err)); } S.armed = null; render(true); break;
     case "rs-time": if (S.rs) { S.rs.time = +v; render(true); } break;
