@@ -290,7 +290,8 @@ function bookingLine(b) {
 const TPL_DEFAULT = {
   ok: "Здравствуйте, {имя}! Ваша запись в «{салон}» подтверждена: {дата} в {время}, {услуги}, мастер {мастер}. Адрес: {адрес}. Ждём вас!",
   cancel: "Здравствуйте, {имя}! К сожалению, ваша запись в «{салон}» на {дата} в {время} отменена. Выберите другое время: {ссылка}",
-  salon: "Здравствуйте! Я записался(-ась) онлайн: {дата} в {время}, {услуги}, мастер {мастер}. Имя: {имя}, телефон: {телефон}."
+  salon: "Здравствуйте! Я записался(-ась) онлайн: {дата} в {время}, {услуги}, мастер {мастер}. Имя: {имя}, телефон: {телефон}.",
+  remind: "Здравствуйте, {имя}! Давно вас не было в «{салон}» 💅 Пора обновить маникюр? Выберите удобное время: {ссылка}"
 };
 const TPL_KEYS = ["{имя}", "{дата}", "{время}", "{услуги}", "{мастер}", "{салон}", "{адрес}", "{ссылка}", "{телефон}"];
 const tplText = k => { const t = SET && SET.msgTpl && SET.msgTpl[k]; return t && t.trim() ? t : TPL_DEFAULT[k]; };
@@ -302,10 +303,10 @@ function fillTpl(t, b) {
 const msgToSalon = b => fillTpl(tplText("salon"), b);
 const msgToClient = b => fillTpl(tplText(b.status === "cancelled" ? "cancel" : "ok"), b);
 function vTpl() {
-  const k = S.tplTab || "ok", d = S.tplDraft || (S.tplDraft = { ok: tplText("ok"), cancel: tplText("cancel"), salon: tplText("salon") });
-  const tabs = [["ok", "Подтверждение"], ["cancel", "Отмена"], ["salon", "Клиент → салон"]].map(([id, l]) => `<button data-act="tpl-tab" data-v="${id}" aria-pressed="${k === id}">${l}</button>`).join("");
+  const k = S.tplTab || "ok", d = S.tplDraft || (S.tplDraft = { ok: tplText("ok"), cancel: tplText("cancel"), salon: tplText("salon"), remind: tplText("remind") });
+  const tabs = [["ok", "Подтверждение"], ["cancel", "Отмена"], ["remind", "Пора записаться"], ["salon", "Клиент → салон"]].map(([id, l]) => `<button data-act="tpl-tab" data-v="${id}" aria-pressed="${k === id}">${l}</button>`).join("");
   const sample = { name: "Мария", date: addDays(todayKey(), 2), start: 780, serviceNames: [(SET.services[0] || {}).name || "Маникюр"], artist: (SET.artists[0] || {}).id, phone: "+7 900 555-66-77", status: k === "cancel" ? "cancelled" : "confirmed" };
-  const title = { ok: "Запись подтверждена", cancel: "Запись отменена", salon: "Клиент пишет салону" }[k];
+  const title = { ok: "Запись подтверждена", cancel: "Запись отменена", salon: "Клиент пишет салону", remind: "Пора записаться (клиент давно не был)" }[k];
   return `${header("", "Тексты сообщений", "settings")}
   <p class="small muted" style="margin-top:-8px">Эти тексты открываются в WhatsApp, Telegram, SMS или MAX по кнопкам «Сообщить клиенту». Перед отправкой текст можно поправить.</p>
   <div class="seg" role="group" aria-label="Какое сообщение">${tabs}</div>
@@ -320,7 +321,7 @@ function vTpl() {
 }
 async function saveTpl() {
   const d = S.tplDraft; if (!d) return;
-  const out = {}; ["ok", "cancel", "salon"].forEach(k => { out[k] = (d[k] || "").trim() === TPL_DEFAULT[k] ? "" : (d[k] || "").trim().slice(0, 600); });
+  const out = {}; ["ok", "cancel", "salon", "remind"].forEach(k => { out[k] = (d[k] || "").trim() === TPL_DEFAULT[k] ? "" : (d[k] || "").trim().slice(0, 600); });
   S.saving = true; render(true);
   try { await updateDoc(settingsRef, { msgTpl: out }); S.draft = null; S.dirty = false; toast("Тексты сохранены"); S.tplDraft = null; S.saving = false; go("settings"); return; }
   catch (err) { toast(errText(err)); }
@@ -572,7 +573,7 @@ async function loadClientBookings(force) {
 }
 function clientList() {
   const m = {}, now = todayKey();
-  const add = (key, name, phone) => (m[key] = m[key] || { key, name: name || "Клиент", phone: phone || "", note: "", visits: 0, spent: 0, cancels: 0, last: "", next: "", artists: {}, list: [] });
+  const add = (key, name, phone) => (m[key] = m[key] || { key, name: name || "Клиент", phone: phone || "", note: "", visits: 0, spent: 0, cancels: 0, last: "", next: "", artists: {}, list: [], wear: {} });
   (CL_BOOK || []).forEach(b => {
     const c = add(clientKey(b.name, b.phone), b.name, b.phone);
     if ((b.created || 0) >= (c._t || 0)) { c.name = b.name || c.name; if (b.phone) c.phone = b.phone; c._t = b.created || 0; }
@@ -582,8 +583,83 @@ function clientList() {
       if (b.date > c.last) { c.last = b.date; c.lastSvc = (b.serviceNames || []).join(", "); c.lastArtist = b.artist; } c.artists[b.artist] = (c.artists[b.artist] || 0) + 1; }
     else if (!c.next || b.date < c.next) c.next = b.date;
   });
-  Object.keys(CLIENT_DOCS).forEach(k => { const d = CLIENT_DOCS[k], c = add(k, d.name, d.phone); if (d.name) c.name = d.name; if (d.phone) c.phone = d.phone; c.note = d.note || ""; c.saved = true; if (d.dk) c.dk = d.dk; });
+  Object.keys(CLIENT_DOCS).forEach(k => { const d = CLIENT_DOCS[k], c = add(k, d.name, d.phone); if (d.name) c.name = d.name; if (d.phone) c.phone = d.phone; c.note = d.note || ""; c.saved = true; if (d.dk) c.dk = d.dk; c.wear = d.wear || {}; c.reminded = d.remindedAt || 0; });
+  Object.values(m).forEach(c => rebookInfo(c, now));
   return Object.values(m).sort((a, b) => ((b.next || b.last) || "").localeCompare((a.next || a.last) || "") || a.name.localeCompare(b.name));
+}
+/* ---------- «Пора записаться»: each client's usual gap between visits ---------- */
+const REBOOK_DEF = () => Number(SET && SET.rebookDays) || 21;
+const daysBetween = (a, b) => Math.round((dateOf(b) - dateOf(a)) / 864e5);
+function rebookInfo(c, now) {
+  const dates = [...new Set(c.list.filter(b => b.status !== "cancelled" && b.date <= now).map(b => b.date))].sort();
+  const gaps = []; for (let i = 1; i < dates.length; i++) { const g = daysBetween(dates[i - 1], dates[i]); if (g >= 5) gaps.push(g); }
+  c.dates = dates; c.gaps = gaps;
+  c.cycle = gaps.length ? Math.min(60, Math.max(14, Math.round(gaps.reduce((x, y) => x + y, 0) / gaps.length))) : REBOOK_DEF();
+  const dkLast = c.dk && c.dk.last && c.dk.last <= now ? c.dk.last : "";
+  c.lastAny = c.last > dkLast ? c.last : dkLast;
+  c.since = c.lastAny ? daysBetween(c.lastAny, now) : null;
+  const futDk = c.dk && c.dk.last && c.dk.last > now;
+  c.due = !!c.lastAny && !c.next && !futDk && c.since >= c.cycle && c.since <= 180 && !(c.reminded && Date.now() - c.reminded < 7 * 864e5);
+  c.lost = !!c.lastAny && !c.next && !futDk && c.since >= 60;
+  const w = Object.values(c.wear || {}).filter(x => x && x.w); c.wearAvg = w.length ? w.reduce((x, y) => x + y.w, 0) / w.length : 0; c.wearN = w.length;
+}
+const remindMsg = c => fillTpl(tplText("remind"), { name: c.name, phone: c.phone, date: c.lastAny || todayKey(), start: 0, serviceNames: c.lastSvc ? [c.lastSvc] : [], artist: c.lastArtist });
+function remindButtons(c) {
+  if (!c.phone) return `<span class="tiny muted">Нет телефона — напомнить можно только при встрече.</span>`;
+  const t = remindMsg(c);
+  return `<div class="msgbtns"><a class="btn sm ghost msg-wa" data-remind="${esc(c.key)}" href="${esc(waLink(c.phone, t))}" target="_blank" rel="noopener">${ICON.wa}WhatsApp</a>
+    <a class="btn sm ghost msg-tg" data-remind="${esc(c.key)}" href="${esc(tgLink("", t))}" target="_blank" rel="noopener">${ICON.tg}Telegram</a>
+    <a class="btn sm ghost msg-sms" data-remind="${esc(c.key)}" href="${esc(smsLink(c.phone, t))}">${ICON.sms}SMS</a>
+    <button class="btn sm ghost msg-max" data-act="max" data-remind="${esc(c.key)}" data-u="https://max.ru/" data-v="${esc(t)}" data-p="${esc(c.phone)}">${ICON.max}MAX</button></div>`;
+}
+const sinceTxt = n => n + " " + plural(n, ["день", "дня", "дней"]);
+// how long the last coating lasted (saved in the client card, per visit)
+const WEAR_ISSUES = ["без сколов", "сколы", "отслойка", "трещина", "поломка"];
+const wearTxt = x => x && x.w ? "носка " + (x.w >= 5 ? "5+ нед" : x.w + " нед") + (x.i && x.i.length ? " · " + x.i.join(", ") : "") + (x.n ? " · " + x.n : "") : "";
+function wearEditor(c, b) {
+  const W = S.wearEd && S.wearEd.id === b.id ? S.wearEd : { id: b.id, w: 0, i: [], n: "" };
+  return `<div class="card stack wear-ed" style="margin:6px 0 4px;background:var(--soft2)"><b class="small">Как носилось покрытие от ${esc(shortDate(b.date))}?</b>
+    <div class="chips chips-wrap" role="group" aria-label="Сколько носилось">${[1, 2, 3, 4, 5].map(n => `<button class="chip" data-act="wear-w" data-v="${n}" aria-pressed="${W.w === n}">${n === 5 ? "5+ нед" : n + " нед"}</button>`).join("")}</div>
+    <div class="chips chips-wrap" role="group" aria-label="Что было">${WEAR_ISSUES.map(x => `<button class="chip" data-act="wear-i" data-v="${esc(x)}" aria-pressed="${W.i.includes(x)}">${esc(x)}</button>`).join("")}</div>
+    <input id="wearNote" maxlength="80" autocomplete="off" placeholder="Комментарий (необязательно)" value="${esc(W.n || "")}" aria-label="Комментарий о носке">
+    <div class="btns"><button class="btn sm" data-act="wear-save" data-v="${esc(c.key)}" ${W.w ? "" : "disabled"}>Сохранить</button><button class="btn sm ghost" data-act="wear-close">Отмена</button></div></div>`;
+}
+function lastVisitOf(c) {
+  const now = todayKey();
+  return c.list.filter(b => b.status !== "cancelled" && (b.date < now || (b.date === now && b.start + b.dur <= nowMin()))).sort((a, b) => (b.date + hm(b.start)).localeCompare(a.date + hm(a.start)))[0];
+}
+// «Повторить прошлый визит»: same services, master and length — only the date and time are left
+function repeatBooking(c, date) {
+  const lb = lastVisitOf(c); if (!lb) return null;
+  const sel = (lb.services || []).filter(svcById);
+  const artist = ROLE === "master" ? MY_ARTIST : (SET.artists.some(a => a.id === lb.artist) ? lb.artist : SET.artists.length === 1 ? SET.artists[0].id : null);
+  return { artist, sel, date: date || todayKey(), time: null, name: c.name, surname: "", phone: c.phone, note: "", clientKey: c.key, repeatOf: lb.id };
+}
+function retentionStats(from, to) {
+  const all = clientList().filter(c => c.dates && c.dates.length), now = todayKey();
+  const ret = all.filter(c => c.dates.length >= 2), gaps = all.flatMap(c => c.gaps);
+  const inP = all.filter(c => c.dates.some(d => d >= from && d <= to));
+  const fresh = inP.filter(c => c.dates[0] >= from), back = inP.length - fresh.length;
+  const lost = clientList().filter(c => c.lost).length, due = clientList().filter(c => c.due).length;
+  const wear = all.filter(c => c.wearN), wearAvg = wear.length ? wear.reduce((x, c) => x + c.wearAvg * c.wearN, 0) / wear.reduce((x, c) => x + c.wearN, 0) : 0;
+  return { clients: all.length, retPct: all.length ? Math.round(ret.length / all.length * 100) : 0, gap: gaps.length ? Math.round(gaps.reduce((x, y) => x + y, 0) / gaps.length) : 0, fresh: fresh.length, back, lost, due, wearAvg };
+}
+function vRetention() {
+  if (!CL_BOOK) { loadClientBookings(); return `<h2 class="h2">Возвращаемость клиентов</h2>${loading()}`; }
+  const [from, to, label] = periodRange(S.repPeriod), R = retentionStats(from, to);
+  return `<h2 class="h2">Возвращаемость клиентов</h2>
+  <div class="stat3">
+    <div class="card"><span class="tiny muted">Вернулись</span><b>${R.retPct}%</b><span class="tiny muted">${R.clients} в базе</span></div>
+    <div class="card"><span class="tiny muted">Интервал</span><b>${R.gap ? R.gap + " дн." : "—"}</b><span class="tiny muted">между визитами</span></div>
+    <div class="card"><span class="tiny muted">Носка</span><b>${R.wearAvg ? R.wearAvg.toFixed(1).replace(".", ",") + " нед" : "—"}</b><span class="tiny muted">в среднем</span></div>
+  </div>
+  <div class="card stack" style="gap:6px">
+    <div class="sumrow"><span class="muted">${esc(label)}: новые клиенты</span><b>${R.fresh}</b></div>
+    <div class="sumrow"><span class="muted">${esc(label)}: постоянные клиенты</span><b>${R.back}</b></div>
+    <div class="sumrow"><span class="muted">Давно не были (60+ дней, без записи)</span><b style="color:${R.lost ? "var(--bad)" : "inherit"}">${R.lost}</b></div>
+    <button class="btn sm ghost" data-act="cl-due">Пора записаться: ${R.due} ${plural(R.due, ["клиент", "клиента", "клиентов"])} ›</button>
+  </div>
+  <p class="tiny muted">«Вернулись» — клиенты, у которых 2 и больше визитов. Интервал считается по каждому клиенту.</p>`;
 }
 function matchClients(q, limit) {
   q = String(q || "").trim().toLowerCase(); const d = q.replace(/\D/g, "");
@@ -594,7 +670,23 @@ const visitsTxt = n => n + " " + plural(n, ["визит", "визита", "ви�
 function vClients() {
   if (!CL_BOOK) loadClientBookings();
   const q = S.clQ || "", all = clientList(), list = q.trim().length >= 2 ? matchClients(q) : all;
+  const due = all.filter(c => c.due).sort((a, b) => a.since - b.since);
+  const seg = `<div class="seg" role="group" aria-label="Список"><button data-act="cl-tab" data-v="all" aria-pressed="${S.clTab !== "due"}">Все</button><button data-act="cl-tab" data-v="due" aria-pressed="${S.clTab === "due"}">Пора записаться${CL_BOOK ? " (" + due.length + ")" : ""}</button></div>`;
+  if (S.clTab === "due") return `<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 class="h1" style="font-size:26px">Клиенты</h1><span class="small muted">${all.length} в базе</span></div>
+  ${seg}
+  <p class="small muted" style="margin:0">Клиенты, у которых прошёл их обычный интервал между визитами, а новой записи нет. Напишите им — одним нажатием.</p>
+  ${ROLE === "owner" ? `<label class="field" for="rebookDays">Если клиент был один раз, напоминать через<select id="rebookDays" data-rebook="1">${[14, 21, 28, 35, 42].map(n => `<option value="${n}" ${REBOOK_DEF() === n ? "selected" : ""}>${n / 7} нед.</option>`).join("")}</select></label>` : ""}
+  ${!CL_BOOK ? loading() : due.length ? due.slice(0, 100).map(c => `<div class="card stack due-card" style="gap:8px">
+    <button class="cl-row" data-act="cl-open" data-v="${esc(c.key)}" style="border:0;padding:0">
+      <span class="biglogo" style="width:40px;height:40px;border-radius:20px;font-size:16px">${esc(c.name.charAt(0).toUpperCase())}</span>
+      <span class="stack" style="gap:1px;flex:1;min-width:0;text-align:left"><b>${esc(c.name)}</b><span class="tiny muted">был(а) ${sinceTxt(c.since)} назад · обычно раз в ${sinceTxt(c.cycle)}</span>${c.lastSvc ? `<span class="tiny muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.lastSvc)}</span>` : ""}</span>
+      <span class="tiny" style="color:var(--accent);font-weight:700">›</span></button>
+    ${remindButtons(c)}
+    <div class="btns">${lastVisitOf(c) ? `<button class="btn sm" data-act="cl-repeat" data-v="${esc(c.key)}">Повторить прошлый визит</button>` : `<button class="btn sm" data-act="cl-book" data-v="${esc(c.key)}">Записать</button>`}<button class="btn sm ghost" data-act="cl-reminded" data-v="${esc(c.key)}">Уже напомнили</button></div>
+  </div>`).join("") : `<div class="empty">Сейчас всем напоминать рано. Здесь появятся клиенты, которым пора на маникюр.</div>`}
+  <p class="tiny muted">После напоминания клиент пропадает из списка на неделю. Текст можно изменить: Настройки → «Тексты сообщений» → «Пора записаться».</p>`;
   return `<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 class="h1" style="font-size:26px">Клиенты</h1><span class="small muted">${all.length} в базе</span></div>
+  ${seg}
   <label class="search"><span aria-hidden="true">⌕</span><input id="clQ" type="search" inputmode="search" autocomplete="off" placeholder="Имя или телефон" value="${esc(q)}" aria-label="Поиск клиента"></label>
   <div class="btns"><button class="btn ghost" style="flex:2" data-act="cl-new">${ICON.plus}Новый клиент</button>${ROLE === "owner" ? `<button class="btn ghost" style="flex:1" data-act="imp-open">Импорт из DIKIDI</button>` : ""}</div>
   <div id="clList">${clientRows(list)}</div>
@@ -615,8 +707,11 @@ function vClient() {
   if (!c) return `${header("", "Клиент", "clients")}${CL_BOOK ? `<div class="empty">Клиент не найден.</div>` : loading()}`;
   const fav = Object.keys(c.artists).sort((a, b) => c.artists[b] - c.artists[a])[0];
   const hist = c.list.slice().sort((a, b) => (b.date + hm(b.start)).localeCompare(a.date + hm(a.start)));
-  const msgB = { name: c.name, phone: c.phone };
+  const msgB = { name: c.name, phone: c.phone }, lb = lastVisitOf(c);
   return `${header("", c.name, "clients")}
+  ${c.due ? `<div class="card stack due-card" style="gap:8px;border:2px solid var(--accent)"><b>Пора записаться</b><span class="small muted">Был(а) ${sinceTxt(c.since)} назад, обычно приходит раз в ${sinceTxt(c.cycle)}. Напомните:</span>${remindButtons(c)}</div>` : ""}
+  ${lb && (lb.services || []).some(svcById) ? `<button class="btn" data-act="cl-repeat" data-v="${esc(c.key)}">Повторить прошлый визит<span class="tiny" style="display:block;font-weight:600;opacity:.85">${esc((lb.serviceNames || []).join(", "))} · ${esc(artistName(lb.artist))}</span></button>` : ""}
+  ${c.wearN ? `<div class="card stack" style="gap:2px"><span class="tiny muted" style="font-weight:700">НОСКА ПОКРЫТИЯ</span><b>В среднем ${c.wearAvg.toFixed(1).replace(".", ",")} нед</b><span class="small muted">${esc(wearTxt(Object.values(c.wear).filter(x => x && x.w).slice(-1)[0]))} (последняя отметка)</span></div>` : ""}
   <div class="stat3"><div class="card"><span class="tiny muted">Визитов</span><b>${c.visits}</b></div><div class="card"><span class="tiny muted">Потрачено</span><b>${rub(c.spent)}</b></div><div class="card"><span class="tiny muted">Отмены</span><b>${c.cancels}</b></div></div>
   ${c.dk ? `<div class="card stack" style="gap:2px"><span class="tiny muted" style="font-weight:700">ИСТОРИЯ ИЗ DIKIDI</span><b>${c.dk.visits} ${plural(c.dk.visits, ["запись", "записи", "записей"])} · потрачено ${rub(c.dk.spent)}</b><span class="small muted">${c.dk.last ? "последняя запись " + esc(keyRu(c.dk.last)) : ""}${c.dk.bday ? (c.dk.last ? " · " : "") + "день рождения " + esc(c.dk.bday) : ""}</span></div>` : ""}
   ${c.last ? `<div class="card stack" style="gap:2px"><span class="tiny muted" style="font-weight:700">ПОСЛЕДНИЙ ВИЗИТ</span><b>${esc(shortDate(c.last))} · ${esc(c.lastSvc || "")}</b><span class="small muted">мастер ${esc(artistName(c.lastArtist))}${c.next ? " · следующая запись " + esc(shortDate(c.next)) : ""}</span></div>` : ""}
@@ -635,8 +730,9 @@ function vClient() {
   <h2 class="h2">История визитов</h2>
   ${hist.length ? `<div class="card" style="padding:0">${hist.map((b, i) => { const fut = b.status !== "cancelled" && (b.date > todayKey() || (b.date === todayKey() && b.start + b.dur > nowMin()));
     return `<div class="cl-hist" style="${i ? "" : "border-top:0"}"><span class="stack" style="align-items:center;width:46px"><b>${new Date(b.date + "T12:00").getDate()}</b><span class="tiny muted">${MONG[new Date(b.date + "T12:00").getMonth()].slice(0, 3)}</span></span>
-      <span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small">${esc((b.serviceNames || []).join(", "))}</b><span class="tiny" style="color:${b.status === "cancelled" ? "var(--bad)" : fut ? "var(--accent)" : "var(--muted)"}">${b.status === "cancelled" ? "Отменена" : (fut ? "Запланирован · " : "") + hm(b.start) + " · " + esc(artistName(b.artist))}</span></span>
-      <b class="small">${rub(b.total)}</b></div>`; }).join("")}</div>` : `<div class="empty">Визитов пока нет.</div>`}
+      <span class="stack" style="gap:1px;flex:1;min-width:0"><b class="small">${esc((b.serviceNames || []).join(", "))}</b><span class="tiny" style="color:${b.status === "cancelled" ? "var(--bad)" : fut ? "var(--accent)" : "var(--muted)"}">${b.status === "cancelled" ? "Отменена" : (fut ? "Запланирован · " : "") + hm(b.start) + " · " + esc(artistName(b.artist))}</span>
+        ${b.status !== "cancelled" && !fut ? (c.wear[b.id] ? `<button class="linkbtn tiny" style="padding:0;text-align:left;color:var(--ok)" data-act="wear-open" data-v="${esc(b.id)}">✓ ${esc(wearTxt(c.wear[b.id]))}</button>` : `<button class="linkbtn tiny" style="padding:0;text-align:left" data-act="wear-open" data-v="${esc(b.id)}">+ Как носилось?</button>`) : ""}</span>
+      <b class="small">${rub(b.total)}</b></div>${S.wearEd && S.wearEd.id === b.id ? wearEditor(c, b) : ""}`; }).join("")}</div>` : `<div class="empty">Визитов пока нет.</div>`}
   <button class="btn" data-act="cl-book" data-v="${esc(c.key)}">Записать ${c.visits ? "снова" : "клиента"}</button>`;
 }
 function vClientNew() {
@@ -1641,7 +1737,8 @@ function vManual() {
       : `<div class="small muted">На этот день нет свободного времени${chair ? " (или занято педикюрное кресло)" : ""}.</div>`}
   </div>
   <div class="card stack"><b>Клиент</b>
-    ${M.clientKey ? `<div class="picked"><span class="stack" style="gap:2px"><b>${esc(M.name)}${M.phone ? " · " + esc(M.phone) : ""}</b>${(() => { const c = clientList().find(x => x.key === M.clientKey); return c ? `<span class="tiny">${visitsTxt(c.visits)}${c.note ? " · " + esc(c.note) : ""}</span>` : ""; })()}</span><button class="linkbtn" data-act="mb-unpick">Другой</button></div>` : `
+    ${M.clientKey ? `<div class="picked"><span class="stack" style="gap:2px"><b>${esc(M.name)}${M.phone ? " · " + esc(M.phone) : ""}</b>${(() => { const c = clientList().find(x => x.key === M.clientKey); return c ? `<span class="tiny">${visitsTxt(c.visits)}${c.note ? " · " + esc(c.note) : ""}</span>` : ""; })()}</span><button class="linkbtn" data-act="mb-unpick">Другой</button></div>
+    ${(() => { const c = clientList().find(x => x.key === M.clientKey), lb = c && lastVisitOf(c); return lb && (lb.services || []).some(svcById) && !M.repeatOf ? `<button class="btn sm ghost" data-act="mb-repeat" data-v="${esc(c.key)}">↻ Как в прошлый раз: ${esc((lb.serviceNames || []).join(", "))}</button>` : ""; })()}` : `
     <label class="field" for="mbName">Имя * <span class="tiny muted" style="font-weight:500">— или начните вводить, найдём в базе</span><input id="mbName" maxlength="60" autocomplete="off" value="${esc(M.name)}" placeholder="Имя клиента"></label>
     <div id="mbSugg">${mbSuggest()}</div>`}
     ${S.tried && !M.name.trim() ? `<div class="err">Укажите имя клиента</div>` : ""}
@@ -2112,7 +2209,8 @@ function vReport() {
   ${planned.length ? `<p class="small muted">Ещё запланировано: ${planned.length} ${plural(planned.length, ["запись", "записи", "записей"])} на ${rub(sumTotal(planned))}</p>` : ""}
   <h2 class="h2">По мастерам</h2>
   ${cards}
-  <p class="tiny muted">Считаются подтверждённые записи, время которых уже прошло.</p>`;
+  <p class="tiny muted">Считаются подтверждённые записи, время которых уже прошло.</p>
+  ${vRetention()}`;
 }
 function vReportMaster(mine) {
   const id = mine ? MY_ARTIST : S.repMaster;
@@ -2179,6 +2277,11 @@ function sheet() {
       <div class="sumrow"><span class="muted">Итого</span><span class="price">${rub(b.total)}</span></div>
       ${b.note ? `<div class="sumrow"><span class="muted">Комментарий</span><span>«${esc(b.note)}»</span></div>` : ""}
     </div>
+    ${(() => { if (b.status === "cancelled" || !edit) return ""; const c = clientList().find(x => x.key === clientKey(b.name, b.phone)); if (!c) return "";
+      const prev = c.list.filter(x => x.id !== b.id && x.status !== "cancelled" && (x.date + hm(x.start)) < (b.date + hm(b.start))).sort((x, y) => (y.date + hm(y.start)).localeCompare(x.date + hm(x.start)))[0];
+      if (!prev) return "";
+      return c.wear[prev.id] ? `<div class="small" style="color:var(--ok)">Прошлое покрытие (${esc(shortDate(prev.date))}): ${esc(wearTxt(c.wear[prev.id]))}</div>`
+        : `<button class="btn sm ghost" data-act="wear-from-sheet" data-v="${esc(c.key)}|${esc(prev.id)}">Как носилось прошлое покрытие (${esc(shortDate(prev.date))})?</button>`; })()}
     ${b.status !== "cancelled" && others.length ? `<label class="field" for="moveArtist">Передать другому мастеру
       <select id="moveArtist" data-move="${esc(b.id)}"><option value="">Оставить: ${esc(artistName(b.artist))}</option>${others.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join("")}</select></label>` : ""}
     ${!edit ? `<p class="small muted">Только просмотр — изменить запись может мастер ${esc(artistName(b.artist))} или владелец.</p>` : ""}
@@ -2360,6 +2463,21 @@ document.addEventListener("click", async e => {
       const key = clientKey(nm, N.phone); S.saving = true; render(true);
       try { await saveClientCard(key, { name: nm, phone: N.phone.trim().slice(0, 25), note: N.note.trim().slice(0, 1000), created: Date.now() }); toast("Клиент сохранён"); S.saving = false; S.cn = null; S.clKey = key; go("client"); }
       catch (err) { S.saving = false; S.cnErr = errText(err); render(true); } break; }
+    case "cl-tab": S.clTab = v; if (v === "due") loadClientBookings(); render(true); break;
+    case "cl-due": S.clTab = "due"; loadClientBookings(); go("clients"); break;
+    case "cl-repeat": { const c = clientList().find(x => x.key === v); const mb = c && repeatBooking(c); if (!mb) break; loadClientBookings(); S.mb = mb; S.tried = false; go("manual"); break; }
+    case "mb-repeat": { const c = clientList().find(x => x.key === v); const mb = c && repeatBooking(c, S.mb && S.mb.date); if (!mb || !S.mb) break; Object.assign(S.mb, { artist: mb.artist || S.mb.artist, sel: mb.sel, repeatOf: mb.repeatOf, time: null }); render(true); break; }
+    case "cl-reminded": try { await saveClientCard(v, Object.assign({ name: (clientList().find(x => x.key === v) || {}).name || "Клиент", phone: (clientList().find(x => x.key === v) || {}).phone || "" }, { remindedAt: Date.now() })); toast("Отмечено: напомнили"); } catch (err) { toast(errText(err)); } break;
+    case "wear-open": S.wearEd = S.wearEd && S.wearEd.id === v ? null : Object.assign({ id: v, w: 0, i: [], n: "" }, ((clientList().find(x => x.key === S.clKey) || {}).wear || {})[v] || {}); render(true); break;
+    case "wear-from-sheet": { const [ck, bid] = v.split("|"); S.sheet = null; S.clKey = ck; S.clNote = S.clName = S.clSurname = S.clPhone = null;
+      S.wearEd = Object.assign({ id: bid, w: 0, i: [], n: "" }, ((clientList().find(x => x.key === ck) || {}).wear || {})[bid] || {}); go("client"); break; }
+    case "wear-close": S.wearEd = null; render(true); break;
+    case "wear-w": if (S.wearEd) { const e = document.getElementById("wearNote"); if (e) S.wearEd.n = e.value; S.wearEd.w = Number(v); render(true); } break;
+    case "wear-i": if (S.wearEd) { const e = document.getElementById("wearNote"); if (e) S.wearEd.n = e.value; const I = S.wearEd.i || [];
+      S.wearEd.i = v === "без сколов" ? (I.includes(v) ? [] : [v]) : (I.includes(v) ? I.filter(x => x !== v) : I.filter(x => x !== "без сколов").concat(v)); render(true); } break;
+    case "wear-save": if (S.wearEd && S.wearEd.w) { const e = document.getElementById("wearNote"), W = S.wearEd, c = clientList().find(x => x.key === v); if (!c) break;
+      const wear = Object.assign({}, (CLIENT_DOCS[v.slice(0, 60)] || {}).wear || {}, { [W.id]: { w: W.w, i: (W.i || []).slice(0, 5), n: (e ? e.value : W.n || "").trim().slice(0, 80), at: Date.now() } });
+      try { await saveClientCard(v, { name: c.name, phone: c.phone || "", wear }); toast("Носка сохранена"); S.wearEd = null; } catch (err) { toast(errText(err)); } render(true); } break;
     case "cl-book": { const c = clientList().find(x => x.key === v); if (!c) break;
       const fav = Object.keys(c.artists).sort((a, b) => c.artists[b] - c.artists[a])[0];
       S.mb = { artist: ROLE === "master" ? MY_ARTIST : (fav && SET.artists.some(a => a.id === fav) ? fav : SET.artists.length === 1 ? SET.artists[0].id : null), sel: [], date: todayKey(), time: null, name: c.name, surname: "", phone: c.phone, note: "", clientKey: c.key }; S.tried = false; go("manual"); break; }
@@ -2538,7 +2656,14 @@ document.addEventListener("input", e => {
     if (!S.dirty) { S.dirty = true; S.draftErr = ""; refreshChrome(); }
   }
 });
+// reminder sent from «Пора записаться» (WhatsApp / Telegram / SMS / MAX): hide the client from the list for a week
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-remind]"); if (!el) return;
+  const k = el.dataset.remind, c = clientList().find(x => x.key === k); if (!c) return;
+  saveClientCard(k, { name: c.name, phone: c.phone || "", remindedAt: Date.now() }).catch(() => {});
+}, true);
 document.addEventListener("change", async e => {
+  if (e.target.dataset && e.target.dataset.rebook && ROLE === "owner") { try { await updateDoc(settingsRef, { rebookDays: Number(e.target.value) }); toast("Сохранено"); } catch (err) { toast(errText(err)); } return; }
   if (e.target.dataset && e.target.dataset.impMaster != null && S.imp && S.imp.map) { S.imp.map[e.target.dataset.impMaster] = e.target.value; render(true); return; }
   if (S.brk && ["brkDate", "brkStart", "brkDur", "brkRep"].includes(e.target.id)) { const K = S.brk, v = e.target.value;
     if (e.target.id === "brkDate" && v) K.date = v < todayKey() ? todayKey() : v; else if (e.target.id === "brkStart") K.start = +v; else if (e.target.id === "brkDur") K.dur = +v; else if (e.target.id === "brkRep") K.rep = +v;
